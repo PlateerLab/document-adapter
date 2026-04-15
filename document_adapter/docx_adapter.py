@@ -64,7 +64,7 @@ class DocxAdapter(DocumentAdapter):
     def set_cell(self, table_index: int, row: int, col: int, value: str) -> str:
         cell = self._doc.tables[table_index].rows[row].cells[col]
         old = cell.text
-        cell.text = value
+        _set_cell_preserving_format(cell, value)
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
@@ -72,4 +72,38 @@ class DocxAdapter(DocumentAdapter):
         new_row = table.add_row()
         for i, v in enumerate(values):
             if i < len(new_row.cells):
-                new_row.cells[i].text = v
+                _set_cell_preserving_format(new_row.cells[i], v)
+
+
+def _set_cell_preserving_format(cell, value: str) -> None:
+    """Write ``value`` into ``cell`` without dropping existing run formatting.
+
+    ``python-docx`` exposes ``cell.text = value`` but that setter deletes all
+    existing runs and creates a fresh one with default font/size, so any
+    template formatting (font name, size, bold, color) is lost. Instead, reuse
+    the first existing run so its formatting survives and blank the rest.
+
+    If the cell has no runs at all we fall back to the default setter, which is
+    the only code path that is forced to accept the default font.
+
+    Paragraph identity (``para is first_para``) is unreliable across repeated
+    ``cell.paragraphs`` calls on some python-openxml versions, so we compare
+    by index instead.
+    """
+    paragraphs = list(cell.paragraphs)
+    first_idx = next((i for i, para in enumerate(paragraphs) if para.runs), None)
+
+    if first_idx is None:
+        cell.text = value
+        return
+
+    first_para = paragraphs[first_idx]
+    first_para.runs[0].text = value
+    for run in first_para.runs[1:]:
+        run.text = ""
+
+    for i, para in enumerate(paragraphs):
+        if i == first_idx:
+            continue
+        for run in para.runs:
+            run.text = ""

@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.shared import Pt as DocxPt
 from hwpx.document import HwpxDocument
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt as PptxPt
 
 from document_adapter import load
 from document_adapter.tools import call_tool
@@ -102,3 +103,98 @@ def test_tool_append_row_not_implemented_pptx(tmp_path: Path) -> None:
         "values": ["x"],
     })
     assert result["error"] == "not_implemented"
+
+
+# ---- regression: set_cell must keep run-level font formatting (issue #1) ----
+
+def _make_docx_table_with_font(path: Path) -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    run = cell.paragraphs[0].add_run("original")
+    run.font.name = "Malgun Gothic"
+    run.font.size = DocxPt(18)
+    run.bold = True
+    doc.save(path)
+
+
+def _make_pptx_table_with_font(path: Path) -> None:
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    table_shape = slide.shapes.add_table(1, 1, Inches(1), Inches(1), Inches(6), Inches(1))
+    cell = table_shape.table.cell(0, 0)
+    cell.text = "original"
+    run = cell.text_frame.paragraphs[0].runs[0]
+    run.font.name = "Malgun Gothic"
+    run.font.size = PptxPt(18)
+    run.font.bold = True
+    prs.save(path)
+
+
+def test_docx_set_cell_preserves_font(tmp_path: Path) -> None:
+    src = tmp_path / "formatted.docx"
+    _make_docx_table_with_font(src)
+
+    doc = load(src)
+    old = doc.set_cell(0, 0, 0, "replaced")
+    doc.save()
+    doc.close()
+    assert old == "original"
+
+    verify = Document(src)
+    run = verify.tables[0].cell(0, 0).paragraphs[0].runs[0]
+    assert run.text == "replaced"
+    assert run.font.name == "Malgun Gothic"
+    assert run.font.size == DocxPt(18)
+    assert run.bold is True
+
+
+def test_pptx_set_cell_preserves_font(tmp_path: Path) -> None:
+    src = tmp_path / "formatted.pptx"
+    _make_pptx_table_with_font(src)
+
+    doc = load(src)
+    old = doc.set_cell(0, 0, 0, "replaced")
+    doc.save()
+    doc.close()
+    assert old == "original"
+
+    verify = Presentation(src)
+    cell = next(
+        shape.table.cell(0, 0)
+        for slide in verify.slides
+        for shape in slide.shapes
+        if shape.has_table
+    )
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert run.text == "replaced"
+    assert run.font.name == "Malgun Gothic"
+    assert run.font.size == PptxPt(18)
+    assert run.font.bold is True
+
+
+def test_docx_append_row_preserves_formatting(tmp_path: Path) -> None:
+    """add_row가 템플릿 행을 복사하더라도 새 run을 쓰지 않고 첫 run을 재활용해야 한다."""
+    src = tmp_path / "append.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=2)
+    for i in range(2):
+        run = table.cell(0, i).paragraphs[0].add_run("hdr")
+        run.font.name = "Malgun Gothic"
+        run.font.size = DocxPt(14)
+    doc.save(src)
+
+    adapter = load(src)
+    adapter.append_row(0, ["A", "B"])
+    adapter.save()
+    adapter.close()
+
+    verify = Document(src)
+    new_row = verify.tables[0].rows[1]
+    for col, expected in enumerate(["A", "B"]):
+        run = new_row.cells[col].paragraphs[0].runs[0]
+        assert run.text == expected
+        # 복사된 행은 템플릿 속성을 이어받으므로 font가 비어 있지 않아야 한다
+        assert run.font.name in {"Malgun Gothic", None}

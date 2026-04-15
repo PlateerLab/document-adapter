@@ -97,7 +97,7 @@ class PptxAdapter(DocumentAdapter):
         table = self._get_table(table_index)
         cell = table.cell(row, col)
         old = cell.text
-        cell.text = value
+        _set_text_frame_preserving_format(cell.text_frame, value)
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
@@ -107,3 +107,38 @@ class PptxAdapter(DocumentAdapter):
             "PPTX는 python-pptx에 동적 행 추가 API가 없음. "
             "템플릿 단계에서 충분한 빈 행을 만들어 두고 set_cell로 채우는 방식을 권장."
         )
+
+
+def _set_text_frame_preserving_format(text_frame, value: str) -> None:
+    """Write ``value`` into the first run of ``text_frame`` without losing font/size.
+
+    ``python-pptx`` exposes ``cell.text = value`` (which proxies to the text
+    frame) but the setter deletes every run and replaces them with a single
+    default-styled run. To keep template formatting intact we reuse the first
+    existing run instead and blank all other runs/paragraphs.
+
+    An empty text frame (no runs anywhere) falls back to the default setter —
+    that is the one situation where there is no formatting to preserve.
+
+    We compare paragraphs by index rather than identity because python-pptx
+    returns a fresh Python wrapper on every ``paragraphs`` access, so
+    ``para is first_para`` is always False and would cause the second loop
+    to blank the run we just populated.
+    """
+    paragraphs = list(text_frame.paragraphs)
+    first_idx = next((i for i, para in enumerate(paragraphs) if para.runs), None)
+
+    if first_idx is None:
+        text_frame.text = value
+        return
+
+    first_para = paragraphs[first_idx]
+    first_para.runs[0].text = value
+    for run in first_para.runs[1:]:
+        run.text = ""
+
+    for i, para in enumerate(paragraphs):
+        if i == first_idx:
+            continue
+        for run in para.runs:
+            run.text = ""
