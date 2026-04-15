@@ -12,7 +12,32 @@ license = { text = "MIT" }
 authors = [
     { name = "Son Seongjun", email = "sonsj97@plateer.com" },
 ]
-keywords = ["mcp", "llm", "document", "docx", "pptx", "hwpx", "template", "claude"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "claude",
+    "anthropic",
+    "tool-use",
+    "agent",
+    "document",
+    "docx",
+    "pptx",
+    "hwpx",
+    "hwp",
+    "template",
+    "template-engine",
+    "office",
+    "office-automation",
+    "word",
+    "powerpoint",
+    "hancom",
+    "korean",
+    "docxtpl",
+    "python-docx",
+    "python-pptx",
+    "python-hwpx",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -20,6 +45,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Office/Business",
+    "Topic :: Office/Business :: Office Suites",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Environment :: Console",
 ]
 
 dependencies = [
@@ -40,6 +72,9 @@ document-adapter-mcp = "document_adapter.mcp_server:main_sync"
 [project.urls]
 Homepage = "https://github.com/PlateerLab/document-adapter"
 Repository = "https://github.com/PlateerLab/document-adapter"
+Issues = "https://github.com/PlateerLab/document-adapter/issues"
+PyPI = "https://pypi.org/project/document-adapter/"
+Changelog = "https://github.com/PlateerLab/document-adapter/releases"
 
 [tool.setuptools.packages.find]
 include = ["document_adapter*"]

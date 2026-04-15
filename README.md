@@ -1,8 +1,16 @@
 # document-adapter
 
+[![PyPI version](https://img.shields.io/pypi/v/document-adapter.svg)](https://pypi.org/project/document-adapter/)
+[![Python versions](https://img.shields.io/pypi/pyversions/document-adapter.svg)](https://pypi.org/project/document-adapter/)
+[![License](https://img.shields.io/pypi/l/document-adapter.svg)](https://github.com/PlateerLab/document-adapter/blob/main/LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-compatible-blue.svg)](https://modelcontextprotocol.io)
+
 **LLM이 DOCX / PPTX / HWPX 문서를 직접 편집할 수 있게 해주는 통합 어댑터 + MCP 서버.**
 
 세 가지 오피스 포맷을 하나의 파이썬 인터페이스로 추상화하고, Claude Desktop / Claude Code / Anthropic API Tool Use에서 바로 호출할 수 있는 MCP 도구로 노출합니다. 양식 문서의 빈 셀을 자동으로 채우거나, 템플릿의 `{{key}}`를 치환하거나, 기존 표의 내용을 수정하는 작업을 LLM 에이전트가 수행할 수 있습니다.
+
+- 📦 PyPI: https://pypi.org/project/document-adapter/
+- 🔗 Repo: https://github.com/PlateerLab/document-adapter
 
 ## 지원 포맷
 
@@ -18,10 +26,21 @@
 ## 설치
 
 ```bash
-pip install -e .
+pip install document-adapter
+```
 
-# Claude API 예시 스크립트까지 쓰려면
-pip install -e ".[claude]"
+Claude API 예시 스크립트까지 포함:
+
+```bash
+pip install "document-adapter[claude]"
+```
+
+개발 환경에서 소스로 설치:
+
+```bash
+git clone https://github.com/PlateerLab/document-adapter.git
+cd document-adapter
+pip install -e ".[dev]"
 ```
 
 Python 3.10+ 필요.
