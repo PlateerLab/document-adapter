@@ -198,3 +198,127 @@ def test_docx_append_row_preserves_formatting(tmp_path: Path) -> None:
         assert run.text == expected
         # 복사된 행은 템플릿 속성을 이어받으므로 font가 비어 있지 않아야 한다
         assert run.font.name in {"Malgun Gothic", None}
+
+
+# ---- empty-cell regression: endParaRPr / pPr.rPr must be cloned (issue #1 v0.1.2) ----
+
+
+def _make_pptx_empty_cell_with_endpararpr(path: Path) -> None:
+    """빈 PPTX 셀에 endParaRPr(폰트 정보)만 심어둔 상태를 만든다.
+
+    실제 고객 템플릿에서 "아직 값을 입력하지 않았지만 셀이 칠해질 때 쓸
+    폰트"가 endParaRPr에 박혀 있는 상황을 재현한다.
+    """
+    from lxml import etree
+
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    table_shape = slide.shapes.add_table(1, 1, Inches(1), Inches(1), Inches(6), Inches(1))
+    cell = table_shape.table.cell(0, 0)
+
+    # cell.text = ""로 만든 뒤 기존 run과 그 rPr을 전부 제거하고,
+    # endParaRPr만 남긴다 (실제 PowerPoint 저장본의 empty-cell 상태 모방).
+    cell.text = ""
+    p_el = cell.text_frame.paragraphs[0]._p
+    A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    # 기존 <a:r>들 제거
+    for r in p_el.findall(f"{{{A_NS}}}r"):
+        p_el.remove(r)
+    # endParaRPr 주입 (이미 있으면 속성만 세팅)
+    end_rpr = p_el.find(f"{{{A_NS}}}endParaRPr")
+    if end_rpr is None:
+        end_rpr = etree.SubElement(p_el, f"{{{A_NS}}}endParaRPr")
+    end_rpr.set("lang", "en-US")
+    end_rpr.set("sz", "1800")  # 18pt in PPTX units (1/100 pt)
+    end_rpr.set("b", "1")
+    latin = etree.SubElement(end_rpr, f"{{{A_NS}}}latin")
+    latin.set("typeface", "Microsoft Sans Serif")
+
+    prs.save(path)
+
+
+def test_pptx_empty_cell_preserves_endpararpr(tmp_path: Path) -> None:
+    src = tmp_path / "empty_endpara.pptx"
+    _make_pptx_empty_cell_with_endpararpr(src)
+
+    doc = load(src)
+    old = doc.set_cell(0, 0, 0, "V-2024-001")
+    doc.save()
+    doc.close()
+    assert old == ""
+
+    verify = Presentation(src)
+    cell = next(
+        shape.table.cell(0, 0)
+        for slide in verify.slides
+        for shape in slide.shapes
+        if shape.has_table
+    )
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert run.text == "V-2024-001"
+    # endParaRPr에 담겼던 속성이 run의 rPr로 복사되었는지 XML 레벨로 확인
+    A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    rpr = run._r.find(f"{{{A_NS}}}rPr")
+    assert rpr is not None, "new run lost its rPr"
+    assert rpr.get("sz") == "1800"
+    assert rpr.get("b") == "1"
+    latin = rpr.find(f"{{{A_NS}}}latin")
+    assert latin is not None
+    assert latin.get("typeface") == "Microsoft Sans Serif"
+
+
+def _make_docx_empty_cell_with_ppr_rpr(path: Path) -> None:
+    """빈 DOCX 셀의 paragraph에 <w:pPr><w:rPr>만 심어둔 상태를 만든다."""
+    from lxml import etree
+
+    W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    p_el = cell.paragraphs[0]._p
+
+    # 기존 run들 제거
+    for r in p_el.findall(f"{{{W_NS}}}r"):
+        p_el.remove(r)
+
+    # <w:pPr><w:rPr>...</w:rPr></w:pPr> 주입
+    ppr = p_el.find(f"{{{W_NS}}}pPr")
+    if ppr is None:
+        ppr = etree.SubElement(p_el, f"{{{W_NS}}}pPr")
+        p_el.insert(0, ppr)
+    rpr = etree.SubElement(ppr, f"{{{W_NS}}}rPr")
+    rfonts = etree.SubElement(rpr, f"{{{W_NS}}}rFonts")
+    rfonts.set(f"{{{W_NS}}}ascii", "Malgun Gothic")
+    rfonts.set(f"{{{W_NS}}}eastAsia", "Malgun Gothic")
+    sz = etree.SubElement(rpr, f"{{{W_NS}}}sz")
+    sz.set(f"{{{W_NS}}}val", "36")  # half-points → 18pt
+    b = etree.SubElement(rpr, f"{{{W_NS}}}b")
+    b.set(f"{{{W_NS}}}val", "1")
+
+    doc.save(path)
+
+
+def test_docx_empty_cell_preserves_ppr_rpr(tmp_path: Path) -> None:
+    src = tmp_path / "empty_pprrpr.docx"
+    _make_docx_empty_cell_with_ppr_rpr(src)
+
+    doc = load(src)
+    old = doc.set_cell(0, 0, 0, "값")
+    doc.save()
+    doc.close()
+    assert old == ""
+
+    verify = Document(src)
+    run = verify.tables[0].cell(0, 0).paragraphs[0].runs[0]
+    assert run.text == "값"
+    # pPr.rPr에 담겼던 속성이 run의 rPr로 복사됐는지 확인
+    W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    rpr = run._r.find(f"{{{W_NS}}}rPr")
+    assert rpr is not None, "new run lost its rPr"
+    sz = rpr.find(f"{{{W_NS}}}sz")
+    assert sz is not None and sz.get(f"{{{W_NS}}}val") == "36"
+    rfonts = rpr.find(f"{{{W_NS}}}rFonts")
+    assert rfonts is not None
+    assert rfonts.get(f"{{{W_NS}}}ascii") == "Malgun Gothic"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from docxtpl import DocxTemplate
 from .base import DocumentAdapter, TableSchema
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 class DocxAdapter(DocumentAdapter):
@@ -76,34 +78,56 @@ class DocxAdapter(DocumentAdapter):
 
 
 def _set_cell_preserving_format(cell, value: str) -> None:
-    """Write ``value`` into ``cell`` without dropping existing run formatting.
+    """Write ``value`` into ``cell`` without dropping run formatting.
 
-    ``python-docx`` exposes ``cell.text = value`` but that setter deletes all
-    existing runs and creates a fresh one with default font/size, so any
-    template formatting (font name, size, bold, color) is lost. Instead, reuse
-    the first existing run so its formatting survives and blank the rest.
+    ``python-docx``'s ``cell.text = value`` setter wipes every paragraph and
+    run in the cell, replacing them with a brand-new default-styled run. That
+    destroys two kinds of formatting:
 
-    If the cell has no runs at all we fall back to the default setter, which is
-    the only code path that is forced to accept the default font.
+    1. **Existing runs** — font, size, bold, color on already-populated cells.
+    2. **Paragraph mark run properties** — an empty cell often holds a
+       ``<w:p><w:pPr><w:rPr>…</w:rPr></w:pPr></w:p>`` describing how the
+       next typed character should look. Real templates put the table font
+       here so the cell renders correctly even before any text exists.
 
-    Paragraph identity (``para is first_para``) is unreliable across repeated
-    ``cell.paragraphs`` calls on some python-openxml versions, so we compare
-    by index instead.
+    Strategy:
+
+    - If any paragraph already has runs, reuse the first one and blank the
+      rest.
+    - Otherwise, append a new ``<w:r>`` into the first paragraph and clone
+      its ``<w:pPr><w:rPr>`` into the new run's ``<w:rPr>`` so the empty-cell
+      font survives.
+
+    Paragraph identity is compared by index because python-docx returns a
+    fresh Python wrapper on repeated ``cell.paragraphs`` accesses.
     """
     paragraphs = list(cell.paragraphs)
     first_idx = next((i for i, para in enumerate(paragraphs) if para.runs), None)
 
-    if first_idx is None:
+    if first_idx is not None:
+        first_para = paragraphs[first_idx]
+        first_para.runs[0].text = value
+        for run in first_para.runs[1:]:
+            run.text = ""
+        for i, para in enumerate(paragraphs):
+            if i == first_idx:
+                continue
+            for run in para.runs:
+                run.text = ""
+        return
+
+    # Empty-paragraph path: build a run manually so pPr.rPr can be copied.
+    target_para = paragraphs[0] if paragraphs else None
+    if target_para is None:
         cell.text = value
         return
 
-    first_para = paragraphs[first_idx]
-    first_para.runs[0].text = value
-    for run in first_para.runs[1:]:
-        run.text = ""
-
-    for i, para in enumerate(paragraphs):
-        if i == first_idx:
-            continue
-        for run in para.runs:
-            run.text = ""
+    run = target_para.add_run(value)
+    p_el = target_para._p
+    ppr = p_el.find(f"{{{_W_NS}}}pPr")
+    if ppr is not None:
+        rpr_in_ppr = ppr.find(f"{{{_W_NS}}}rPr")
+        if rpr_in_ppr is not None:
+            cloned = deepcopy(rpr_in_ppr)
+            cloned.tag = f"{{{_W_NS}}}rPr"
+            run._r.insert(0, cloned)

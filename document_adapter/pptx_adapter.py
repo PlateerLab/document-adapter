@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterator
 
+from lxml import etree
 from pptx import Presentation
 from pptx.slide import Slide
 
 from .base import DocumentAdapter, TableSchema
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 class PptxAdapter(DocumentAdapter):
@@ -110,35 +113,66 @@ class PptxAdapter(DocumentAdapter):
 
 
 def _set_text_frame_preserving_format(text_frame, value: str) -> None:
-    """Write ``value`` into the first run of ``text_frame`` without losing font/size.
+    """Write ``value`` into ``text_frame`` without losing run-level formatting.
 
     ``python-pptx`` exposes ``cell.text = value`` (which proxies to the text
     frame) but the setter deletes every run and replaces them with a single
-    default-styled run. To keep template formatting intact we reuse the first
-    existing run instead and blank all other runs/paragraphs.
+    default-styled run. This destroys two kinds of formatting:
 
-    An empty text frame (no runs anywhere) falls back to the default setter —
-    that is the one situation where there is no formatting to preserve.
+    1. **Runs that already exist** — font family, size, bold, color, etc.
+    2. **Empty paragraphs that hold an ``<a:endParaRPr>``**, which is where
+       PowerPoint stores the "what would the next character look like" run
+       properties for an otherwise empty cell. Real-world templates put font
+       information here so that the cell looks right even before any text
+       is typed.
 
-    We compare paragraphs by index rather than identity because python-pptx
-    returns a fresh Python wrapper on every ``paragraphs`` access, so
-    ``para is first_para`` is always False and would cause the second loop
-    to blank the run we just populated.
+    Strategy:
+
+    - If the paragraph already has runs, reuse the first one and blank the
+      rest (simple case that covers pre-filled cells).
+    - Otherwise, build a new ``<a:r>`` manually and clone ``<a:endParaRPr>``
+      into its ``<a:rPr>`` so the empty-cell font survives.
+
+    Paragraph comparison uses index, not identity, because python-pptx
+    returns a fresh Python wrapper on every ``paragraphs`` access, which
+    would cause a naive ``para is first_para`` check to always be False
+    and blank the run we just populated.
     """
     paragraphs = list(text_frame.paragraphs)
     first_idx = next((i for i, para in enumerate(paragraphs) if para.runs), None)
 
-    if first_idx is None:
+    if first_idx is not None:
+        first_para = paragraphs[first_idx]
+        first_para.runs[0].text = value
+        for run in first_para.runs[1:]:
+            run.text = ""
+        for i, para in enumerate(paragraphs):
+            if i == first_idx:
+                continue
+            for run in para.runs:
+                run.text = ""
+        return
+
+    # Empty text frame path: inject a run that clones endParaRPr into its rPr.
+    target_para = paragraphs[0] if paragraphs else None
+    if target_para is None:
         text_frame.text = value
         return
 
-    first_para = paragraphs[first_idx]
-    first_para.runs[0].text = value
-    for run in first_para.runs[1:]:
-        run.text = ""
+    p_el = target_para._p
+    end_rpr = p_el.find(f"{{{_A_NS}}}endParaRPr")
 
+    r_el = etree.SubElement(p_el, f"{{{_A_NS}}}r")
+    if end_rpr is not None:
+        rpr = deepcopy(end_rpr)
+        rpr.tag = f"{{{_A_NS}}}rPr"
+        r_el.insert(0, rpr)
+    t_el = etree.SubElement(r_el, f"{{{_A_NS}}}t")
+    t_el.text = value
+
+    # Clear other empty paragraphs so they don't render stray newlines.
     for i, para in enumerate(paragraphs):
-        if i == first_idx:
+        if i == 0:
             continue
         for run in para.runs:
             run.text = ""
