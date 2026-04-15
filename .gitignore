@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.Python
+
+# Test outputs
+output*.docx
+output*.pptx
+output*.hwpx
+adapter_*.docx
+adapter_*.pptx
+adapter_*.hwpx
+existing_*_copy.docx
+existing_*_copy.pptx
+existing_*_copy.hwpx
+~$*
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

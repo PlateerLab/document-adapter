@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-adapter-mcp"
+version = "0.1.0"
+description = "LLM-friendly document template editing (DOCX/PPTX/HWPX) with MCP server and Claude API tool-use support"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Son Seongjun", email = "sonsj97@plateer.com" },
+]
+keywords = ["mcp", "llm", "document", "docx", "pptx", "hwpx", "template", "claude"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "python-docx>=1.1",
+    "docxtpl>=0.20",
+    "python-pptx>=1.0",
+    "python-hwpx>=2.9",
+    "mcp>=1.0",
+]
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.40"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+document-adapter-mcp = "document_adapter.mcp_server:main_sync"
+
+[project.urls]
+Homepage = "https://github.com/PlateerLab/document-adapter-mcp"
+Repository = "https://github.com/PlateerLab/document-adapter-mcp"
+
+[tool.setuptools.packages.find]
+include = ["document_adapter*"]
+exclude = ["tests*", "examples*"]
