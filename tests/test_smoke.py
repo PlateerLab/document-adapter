@@ -322,3 +322,60 @@ def test_docx_empty_cell_preserves_ppr_rpr(tmp_path: Path) -> None:
     rfonts = rpr.find(f"{{{W_NS}}}rFonts")
     assert rfonts is not None
     assert rfonts.get(f"{{{W_NS}}}ascii") == "Malgun Gothic"
+
+
+def test_hwpx_set_cell_preserves_charprid_ref(tmp_path: Path) -> None:
+    """HWPX 셀의 run이 가진 charPrIDRef가 set_cell 후에도 유지되는지 확인.
+
+    python-hwpx의 paragraph.text setter는 PPTX/DOCX와 달리 기존 run의 <hp:t>만
+    교체하는 방식이라 charPrIDRef가 자연스럽게 보존된다. 이 테스트는 upstream이
+    그 동작을 바꿀 경우(run 재생성 방식으로) 즉시 감지하기 위한 회귀 가드다.
+    """
+    import re
+    import zipfile
+
+    src = tmp_path / "empty_charpr.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(1, 1)
+    doc.save_to_path(src)
+
+    # table cell 안의 run만 charPrIDRef="7"로 조작한 zip으로 재기록
+    patched = tmp_path / "patched_charpr.hwpx"
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(patched, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if "section" in item.filename.lower() and item.filename.endswith(".xml"):
+                text = data.decode("utf-8")
+                def repl(m: re.Match) -> str:
+                    tc = m.group(0)
+                    return re.sub(
+                        r'(<hp:run\s+charPrIDRef=")0(")',
+                        r"\g<1>7\g<2>",
+                        tc,
+                        count=1,
+                    )
+                text = re.sub(r"<hp:tc[^>]*>.*?</hp:tc>", repl, text, flags=re.DOTALL)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+
+    # set_cell 실행
+    adapter = load(patched)
+    adapter.set_cell(0, 0, 0, "새 값")
+    adapter.save()
+    adapter.close()
+
+    # table cell 안의 run만 추출해서 확인
+    with zipfile.ZipFile(patched) as z:
+        section = next(
+            n for n in z.namelist() if "section" in n.lower() and n.endswith(".xml")
+        )
+        xml = z.read(section).decode("utf-8")
+
+    tc_match = re.search(r"<hp:tc[^>]*>.*?</hp:tc>", xml, flags=re.DOTALL)
+    assert tc_match is not None
+    run_match = re.search(r"<hp:run[^>]*>.*?</hp:run>", tc_match.group())
+    assert run_match is not None
+    run_xml = run_match.group()
+    assert 'charPrIDRef="7"' in run_xml, f"charPrIDRef not preserved: {run_xml!r}"
+    assert "새 값" in run_xml
