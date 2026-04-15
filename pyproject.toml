@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "document-adapter-mcp"
+name = "document-adapter"
 version = "0.1.0"
 description = "LLM-friendly document template editing (DOCX/PPTX/HWPX) with MCP server and Claude API tool-use support"
 readme = "README.md"
@@ -38,8 +38,8 @@ dev = ["pytest>=8"]
 document-adapter-mcp = "document_adapter.mcp_server:main_sync"
 
 [project.urls]
-Homepage = "https://github.com/PlateerLab/document-adapter-mcp"
-Repository = "https://github.com/PlateerLab/document-adapter-mcp"
+Homepage = "https://github.com/PlateerLab/document-adapter"
+Repository = "https://github.com/PlateerLab/document-adapter"
 
 [tool.setuptools.packages.find]
 include = ["document_adapter*"]

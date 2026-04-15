@@ -1,4 +1,4 @@
-# document-adapter-mcp
+# document-adapter
 
 **LLM이 DOCX / PPTX / HWPX 문서를 직접 편집할 수 있게 해주는 통합 어댑터 + MCP 서버.**
 
