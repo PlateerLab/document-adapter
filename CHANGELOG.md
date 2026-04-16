@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-04-17
+
+### Changed (Docs only)
+- **`fill_form` tool description 강화** — 실측 LLM 실패 패턴 기반. Ollama
+  qwen3.5:4b (4B 모델) 가 복잡한 시나리오에서 tool call 대신 응답 텍스트에
+  `"""json {"fill_form": {...}}"""` JSON 코드블록을 적어 실행되지 않던 문제 관찰.
+  description 에 다음 추가로 극적 개선 확인 (tool call 실패 → 1회 호출로 해소):
+  - "⚠ 반드시 이 도구를 호출" 경고문
+  - direction 선택 기준 (빈 양식 → auto / 예시값 있는 양식 → right) 명확화
+  - `output_path` 기본 동작 ("생략 시 원본 덮어쓰기") 명시
+  - dot-path 예시 `{'피해자.금액': '...', '지급정지.금액': '...'}`
+- `examples/claude_api_example.py`, `examples/ollama_example.py` SYSTEM 프롬프트
+  도 동일 원칙 반영.
+
+### Added
+- `examples/ollama_example.py` — Ollama 네이티브 SDK 로 document-adapter 7 도구
+  에이전트 루프 (qwen2.5:14b 등, 로컬 OSS 스택).
+- `scripts/ollama_scenarios.py` — 모델 × 시나리오 매트릭스 실험 runner.
+- `.github/workflows/tests.yml` — Python 3.10/3.11/3.12 smoke + build CI.
+
 ## [0.7.1] — 2026-04-16
 
 ### Added
