@@ -19,7 +19,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "문서(.docx/.pptx/.hwpx)의 구조를 분석한다. "
             "placeholders({{key}} 태그 목록)와 tables(각 표의 행/열/미리보기)를 반환한다. "
-            "LLM이 어떤 필드를 채우거나 수정할지 판단할 때 먼저 호출해야 한다."
+            "LLM이 어떤 필드를 채우거나 수정할지 판단할 때 먼저 호출해야 한다. "
+            "\n"
+            "**PPTX 특화**: 반환 JSON 에 `shape_summary` (total_shapes / empty_shapes / "
+            "hint) 포함. `hint` 가 있으면 그 지시 를 따라 get_shapes + set_shape_text "
+            "를 호출해야 보고서가 완성됨. 표만 채우면 대부분의 보고서가 비어있는 상태로 "
+            "남음."
         ),
         "input_schema": {
             "type": "object",
@@ -288,6 +293,37 @@ def inspect_document(path: str, min_rows: int = 1, min_cols: int = 1) -> dict[st
         # min_rows/min_cols 필터 재적용
         filtered = [t for t in doc.get_tables(min_rows=min_rows, min_cols=min_cols)]
         result = schema.to_dict()
+
+        # PPTX: shape 요약을 추가해 LLM 에게 set_shape_text 필요성을 신호.
+        # (표 4 개만 보고 set_cell 만 호출하는 실패 패턴 관찰됨 — 실제론 수십 개
+        # textbox 가 비어있어 보고서 완성이 안 됨.)
+        if schema.format == "pptx":
+            try:
+                all_shapes = doc.get_shapes(min_text_len=0)
+                total = len(all_shapes)
+                empty = sum(1 for s in all_shapes if not s.has_text)
+                summary: dict[str, Any] = {
+                    "total_shapes": total,
+                    "empty_shapes": empty,
+                    "filled_shapes": total - empty,
+                }
+                if total > 0 and empty / total > 0.5:
+                    summary["hint"] = (
+                        f"⚠ 이 PPTX 는 {total} 개 shape (textbox / placeholder / 도형 "
+                        f"텍스트) 중 {empty} 개가 비어있는 '빈 양식' 상태입니다. "
+                        f"표({len(filtered)}개) 만 set_cell 로 채우면 보고서의 대부분이 "
+                        f"여전히 비어있습니다. get_shapes 로 전체 shape 목록을 가져와 "
+                        f"set_shape_text 로 시나리오 내용에 맞게 각 shape 를 채워야 "
+                        f"완성본이 됩니다."
+                    )
+                elif total > 0 and empty > 0:
+                    summary["hint"] = (
+                        f"{total} 개 shape 중 {empty} 개가 비어있음. 필요 시 "
+                        f"get_shapes / set_shape_text 사용."
+                    )
+                result["shape_summary"] = summary
+            except NotImplementedError:
+                pass  # DOCX / HWPX 는 shape 개념 약함 — skip
         result["tables"] = [t.to_dict() for t in filtered]
         return result
     finally:

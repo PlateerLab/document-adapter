@@ -7,6 +7,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-04-17
+
+### Added (LLM UX — inspect_document PPTX shape 가시성)
+- **`inspect_document` 응답에 `shape_summary`** (PPTX 전용). 실전 로그 분석 결과
+  에이전트가 `set_shape_text` 를 한 번도 호출하지 않고 표만 채운 뒤 "완성" 으로
+  종결하는 패턴 관찰. `inspect_document` 가 표 위주 정보만 주어서 에이전트가
+  수십 개의 빈 textbox 존재를 **인지조차 못하는 상태** 가 원인.
+  - `total_shapes` / `empty_shapes` / `filled_shapes` 항상 포함
+  - 빈 shape 비율 > 50% 인 경우 `hint` 필드에 **강한 경고** 추가: "표만
+    set_cell 로 채우면 보고서 대부분이 비어있다. get_shapes + set_shape_text
+    를 호출하라."
+  - 빈 shape 가 일부만 있으면 온건한 힌트.
+- `inspect_document` MCP tool description 에 shape_summary/hint 언급 추가.
+
+### Notes
+- DOCX / HWPX 는 `get_shapes()` 가 빈 리스트를 반환하므로 shape_summary 자동 생략.
+- 기존 API 100% 호환 — JSON payload 에 필드가 추가될 뿐.
+
 ## [0.8.0] — 2026-04-17
 
 ### Added (PPTX shape-level 편집 — 표 외 텍스트 직접 편집)
