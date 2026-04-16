@@ -118,11 +118,21 @@ class HwpxAdapter(DocumentAdapter):
                     yield from walk(child_tbl, child_parent, section_name)
 
         for section_name, root in self._pkg.iter_section_roots():
-            # 최상위 <hp:tbl> 찾기: root > hp:p > hp:run > hp:tbl
-            for p in root.findall(HP_P):
-                for run in p.findall(HP_RUN):
-                    for tbl in run.findall(HP_TBL):
-                        yield from walk(tbl, "", section_name)
+            # 섹션의 모든 <hp:tbl> descendant 중 "top-level" 만 선별.
+            # top-level = <hp:tc> (cell) 의 descendant 가 아닌 것.
+            # 이러면 <hp:p>/<hp:run>/<hp:ctrl>/<hp:header>/<hp:footer>/도형 등
+            # 어디에 놓여있든 표를 누락 없이 발견 (xgen-doc2chunk 의 _process_ctrl
+            # 가 처리하던 범위 포함). cell 내부 <hp:tbl> 은 walk 재귀에서 처리.
+            for tbl in root.iter(HP_TBL):
+                parent = tbl.getparent()
+                is_in_cell = False
+                while parent is not None:
+                    if parent.tag == HP_TC:
+                        is_in_cell = True
+                        break
+                    parent = parent.getparent()
+                if not is_in_cell:
+                    yield from walk(tbl, "", section_name)
 
     def _get_table(self, table_index: int) -> tuple[etree._Element, str]:
         """flat_index로 (tbl_element, section_part_name) 반환."""

@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-04-17
+
+### Fixed
+- **HWPX `<hp:ctrl>` 내부 테이블 누락 수정** — 기존 `_iter_tables()` 가
+  `root > hp:p > hp:run > hp:tbl` 직접 경로만 훑어서 `<hp:ctrl>` (header /
+  footer / footNote / endNote / 도형 등) **내부에 포함된 테이블을 놓쳤음**.
+  이제 섹션의 전체 `<hp:tbl>` descendant 중 cell 내부가 아닌 것을 top-level 로
+  인식. nested 테이블은 기존 방식대로 anchor cell 재귀로 처리.
+- 실전 fixture 10 개에는 해당 케이스가 없었으나 합성 테스트로 재현/수정 확인.
+
+### Added
+- smoke test `test_hwpx_ctrl_embedded_table_is_found` — 회귀 방지 (기본 표 +
+  `<hp:ctrl>` 로 감싼 표 총 2 개 전부 발견 + 편집 가능).
+
 ## [0.7.2] — 2026-04-17
 
 ### Changed (Docs only)

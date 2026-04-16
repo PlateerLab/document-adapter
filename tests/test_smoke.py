@@ -1207,3 +1207,75 @@ def test_fill_form_label_normalization(tmp_path: Path) -> None:
 
     assert result["not_found"] == []
     assert len(result["filled"]) == 1
+
+
+# ---- v0.7.3: <hp:ctrl> 내부 테이블 탐지 회귀 방지 ----
+
+def _make_hwpx_with_ctrl_embedded_table(path: Path) -> None:
+    """기본 2x2 표 1 개에 더해 <hp:ctrl> 내부에 동일 구조 표를 1 개 추가.
+
+    HWPX 양식에서 header/footer/footNote 등은 <hp:ctrl> 하위에 들어가므로
+    LLM 이 편집해야 할 표가 ctrl 내부에 숨어있을 수 있다. adapter 가 이를
+    top-level 로 인식하고 편집 가능해야 한다.
+    """
+    import zipfile
+    from copy import deepcopy
+    from lxml import etree
+
+    # 1. 기본 HWPX 생성
+    doc = HwpxDocument.new()
+    doc.add_paragraph("before")
+    doc.add_table(2, 2)
+    doc.add_paragraph("after")
+    doc.save_to_path(path)
+    doc.close()
+
+    HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    # 2. section0.xml 에 <hp:ctrl> 래핑된 tbl 추가
+    with zipfile.ZipFile(path, "r") as zin:
+        section_xml = zin.read("Contents/section0.xml")
+        other = {n: zin.read(n) for n in zin.namelist() if n != "Contents/section0.xml"}
+        infos = {n: zin.getinfo(n) for n in zin.namelist()}
+
+    root = etree.fromstring(section_xml)
+    existing_tbl = next(root.iter(f"{HP}tbl"))
+    cloned = deepcopy(existing_tbl)
+    new_p = etree.SubElement(root, f"{HP}p")
+    new_run = etree.SubElement(new_p, f"{HP}run")
+    new_ctrl = etree.SubElement(new_run, f"{HP}ctrl")
+    new_ctrl.append(cloned)
+
+    modified_xml = etree.tostring(
+        root, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    with zipfile.ZipFile(path, "w") as zout:
+        for name, info in infos.items():
+            data = modified_xml if name == "Contents/section0.xml" else other[name]
+            new_info = zipfile.ZipInfo(filename=name, date_time=info.date_time)
+            new_info.compress_type = info.compress_type
+            zout.writestr(new_info, data)
+
+
+def test_hwpx_ctrl_embedded_table_is_found(tmp_path: Path) -> None:
+    """<hp:ctrl> 내부 tbl 이 top-level 로 발견되고 편집 가능해야 한다 (v0.7.3 회귀 방지)."""
+    src = tmp_path / "ctrl_embedded.hwpx"
+    _make_hwpx_with_ctrl_embedded_table(src)
+
+    adapter = load(src)
+    try:
+        tables = adapter.get_tables()
+        # 2 개 (top-level + ctrl 내부) 전부 발견
+        assert len(tables) == 2, f"expected 2 tables (top-level + ctrl inner), got {len(tables)}"
+        # 두 번째 (ctrl 내부) 표 편집도 가능해야
+        adapter.set_cell(1, 0, 0, "__CTRL_INNER_EDIT__")
+        adapter.save()
+    finally:
+        adapter.close()
+
+    adapter2 = load(src)
+    try:
+        cell = adapter2.get_cell(1, 0, 0)
+        assert cell.text.strip() == "__CTRL_INNER_EDIT__"
+    finally:
+        adapter2.close()
