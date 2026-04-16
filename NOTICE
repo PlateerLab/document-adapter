@@ -1,0 +1,29 @@
+document-adapter
+Copyright 2026 Son Seongjun / PlateerLab
+
+This product includes software developed at PlateerLab
+(https://github.com/PlateerLab).
+
+===============================================================================
+Third-party code attributions
+===============================================================================
+
+HWPX table grid parsing logic
+-----------------------------
+
+Portions of the HWPX table grid construction in
+`document_adapter/hwpx_core/grid.py` (cell position / cell span parsing, and
+the skip-map approach for merged non-anchor cells) are adapted from:
+
+  PlateerLab/xgen-doc2chunk
+  https://github.com/PlateerLab/xgen-doc2chunk
+  Licensed under the Apache License, Version 2.0
+
+The adapted logic is limited to read-side grid construction. All edit-side
+functionality (cell writing, row insertion, ZIP round-trip preservation) is
+original to this project.
+
+You may obtain a copy of the Apache License 2.0 at:
+  http://www.apache.org/licenses/LICENSE-2.0
+
+===============================================================================

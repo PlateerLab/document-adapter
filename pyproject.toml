@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "document-adapter"
-version = "0.3.0"
+version = "0.4.0"
 description = "LLM-friendly document template editing (DOCX/PPTX/HWPX) with MCP server and Claude API tool-use support"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,7 @@ keywords = [
     "docxtpl",
     "python-docx",
     "python-pptx",
-    "python-hwpx",
+    "lxml",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -55,16 +55,18 @@ classifiers = [
 ]
 
 dependencies = [
-    "python-docx>=1.1",
+    "python-docx>=1.2",
     "docxtpl>=0.20",
     "python-pptx>=1.0",
-    "python-hwpx>=2.9",
+    "lxml>=5.0",
     "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]
-dev = ["pytest>=8"]
+# python-hwpx는 Non-Commercial License이므로 runtime 의존성에서 제외.
+# 테스트에서만 fixture 생성용으로 사용 (자체 HwpxAdapter는 hwpx_core 기반이라 불필요).
+dev = ["pytest>=8", "python-hwpx>=2.9"]
 
 [project.scripts]
 document-adapter-mcp = "document_adapter.mcp_server:main_sync"

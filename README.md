@@ -18,11 +18,17 @@
 |---|---|---|---|---|---|---|---|
 | `.docx` | `docxtpl` + `python-docx` | Jinja2 (`{%tr%}` loop 포함) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `.pptx` | `python-pptx` | `{{key}}` 치환 | ✅ (슬라이드 위치 포함) | ✅ | — (포맷 미지원) | ✅ | ❌ (미지원) |
-| `.hwpx` | `python-hwpx` (Pure Python) | `{{key}}` 치환 | ✅ | ✅ | ✅ | ✅ | ✅ (v0.3+) |
+| `.hwpx` | 자체 `hwpx_core` (lxml + zipfile) | `{{key}}` 치환 | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 - HWPX는 한컴오피스 설치가 **불필요**합니다 (macOS/Linux 서버에서 그대로 동작).
 - 구버전 `.hwp`(바이너리 포맷)는 지원하지 않습니다 — `.hwpx`로 변환 후 사용하세요.
 - 병합 셀: 3개 포맷 모두 preview에 `null` 슬롯 + `merges` 메타로 구조 노출. non-anchor 좌표에 쓰기는 `MergedCellWriteError`로 거부.
+
+## 라이선스 (상용 사용 가능)
+
+- 본 프로젝트: **MIT License**
+- 런타임 의존성(`python-docx`, `docxtpl`, `python-pptx`, `lxml`, `mcp`): 전부 **허용형 OSS** (MIT/BSD/Apache-2.0/LGPL-2.1). 상용·내부 서비스에 그대로 포함 가능.
+- v0.3 이하에서 사용했던 `python-hwpx` (Non-Commercial License) 는 v0.4.0부터 **dev 환경(테스트 fixture 생성) 전용**으로 이동. HWPX 편집은 자체 `hwpx_core` 모듈이 수행합니다.
 
 ## 설치
 

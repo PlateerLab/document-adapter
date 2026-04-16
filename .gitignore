@@ -28,3 +28,9 @@ existing_*_copy.hwpx
 .vscode/
 .idea/
 *.swp
+
+# Real-world HWPX fixtures (개인/회사 문서 — 절대 커밋 금지)
+tests/fixtures/hwpx/real/
+scripts/_poc_out/
+scripts/hwpx_regression_baseline.json
+.venv-poc/
