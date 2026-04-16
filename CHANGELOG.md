@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-04-16
+
+### Added
+- **`fill_form(data, direction="auto", strict=False)` — 라벨 기반 일괄 채우기 API**
+  (프로젝트의 "LLM 이 쓰기 편하게" 목표의 핵심 개선)
+  - LLM 이 좌표 (table_index/row/col) 계산 없이 "접수번호", "성명" 같은 라벨
+    key-value dict 로 양식 채움
+  - auto 모드: 라벨 셀 오른쪽 → 아래 → 같은 셀 순으로 값 셀 탐색
+  - 사용자 요청 라벨 간 cross-check 로 인접 라벨 오염 방지
+    (예: `{"성명": "...", "주소": "..."}` 함께 넘기면 "성명" 옆의 "주소" 덮어쓰기 방지)
+  - same 셀 fallback 시 append_to_cell 로 라벨 뒤에 값 덧붙임
+  - 반환: `{filled: [...], not_found: [...], ambiguous: [...]}`
+- HWPX 셀 크기 메타 (v0.6.0 에서 DOCX/PPTX 만 제공했던 것과 대칭)
+  - `<hp:cellSz width height>` (HU → cm) 파싱
+- MCP `tools.py` 에 `fill_form` 도구 등록 (JSON payload 로 그대로 노출)
+- smoke test 5 건 추가 (DOCX/PPTX 라벨-값 분리, not_found, strict, label 정규화)
+
+### Added (Docs)
+- CHANGELOG.md 신규
+- README: 셀 크기 메타 노트 추가
+
 ## [0.6.0] — 2026-04-16
 
 ### Added

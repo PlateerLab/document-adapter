@@ -153,9 +153,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "append_row",
         "description": (
-            "표 끝에 새 행을 추가한다. **DOCX/HWPX 지원**, PPTX는 API 미지원으로 에러 반환. "
-            "HWPX는 마지막 행을 deepcopy해 스타일/폭 상속. PPTX는 템플릿에 여분 행을 두고 "
-            "set_cell로 채우는 방식을 권장."
+            "표 끝에 새 행을 추가한다. DOCX / PPTX / HWPX 모두 지원 (v0.5+). "
+            "마지막 행을 deepcopy 해 스타일/서식 상속. "
+            "제약: 마지막 행이 위 행의 rowSpan 영역에 걸쳐있으면 거부."
         ),
         "input_schema": {
             "type": "object",
@@ -170,6 +170,42 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "output_path": {"type": "string"},
             },
             "required": ["path", "table_index", "values"],
+        },
+    },
+    {
+        "name": "fill_form",
+        "description": (
+            "라벨 이름으로 값 셀을 자동 탐지해 **일괄 채우기**. 좌표 (table_index, row, col) "
+            "계산 없이 '접수번호', '성명' 같은 라벨 key-value dict 로 양식 채움. "
+            "auto 모드: 라벨 셀 오른쪽 → 아래 → 같은 셀 순으로 값 셀 탐색. "
+            "오른쪽/아래 셀이 사용자 요청 라벨 중 하나이면 (서로 라벨 공간 보호) skip 후 다음 시도. "
+            "같은 셀로 fallback 시 append_to_cell 로 라벨 뒤에 값 덧붙임. "
+            "**팁**: 한 양식의 관련 라벨을 함께 넘기면 라벨끼리 서로 보호하여 덮어쓰기 방지. "
+            "반환: {filled:[...], not_found:[...], ambiguous:[...]}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "data": {
+                    "type": "object",
+                    "description": "라벨: 값 dict (예: {'접수번호': '2026-0001', '성명': '홍길동'})",
+                    "additionalProperties": {"type": "string"},
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["auto", "right", "below", "same"],
+                    "default": "auto",
+                    "description": "값 셀 탐색 방향. auto 권장.",
+                },
+                "strict": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "True 면 라벨 매칭 실패 시 에러. False 면 not_found 에 기록.",
+                },
+                "output_path": {"type": "string"},
+            },
+            "required": ["path", "data"],
         },
     },
 ]
@@ -314,6 +350,24 @@ def append_row(path: str, table_index: int, values: list[str],
     }
 
 
+def fill_form(path: str, data: dict[str, str],
+              direction: str = "auto", strict: bool = False,
+              output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.fill_form(data, direction=direction, strict=strict)
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
 # -------- 이름으로 dispatch --------
 
 TOOL_HANDLERS = {
@@ -323,6 +377,7 @@ TOOL_HANDLERS = {
     "set_cell": set_cell,
     "append_to_cell": append_to_cell,
     "append_row": append_row,
+    "fill_form": fill_form,
 }
 
 

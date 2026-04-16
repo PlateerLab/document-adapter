@@ -1044,3 +1044,124 @@ def test_hwpx_set_cell_preserves_charprid_ref(tmp_path: Path) -> None:
     run_xml = run_match.group()
     assert 'charPrIDRef="7"' in run_xml, f"charPrIDRef not preserved: {run_xml!r}"
     assert "새 값" in run_xml
+
+
+# ---- v0.7: fill_form (label-based bulk fill) ----
+
+
+def test_fill_form_docx_label_right_value(tmp_path: Path) -> None:
+    """DOCX 2x2 라벨|값 패턴 — fill_form auto 가 오른쪽 값 셀에 set_cell."""
+    src = tmp_path / "form.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "이름"
+    table.cell(0, 1).text = ""
+    table.cell(1, 0).text = "부서"
+    table.cell(1, 1).text = ""
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        result = adapter.fill_form({"이름": "홍길동", "부서": "개발팀"})
+        adapter.save()
+    finally:
+        adapter.close()
+
+    assert result["not_found"] == []
+    assert result["ambiguous"] == []
+    assert len(result["filled"]) == 2
+    filled_by_label = {f["label"]: f for f in result["filled"]}
+    assert filled_by_label["이름"]["action"] == "set_cell"
+    assert filled_by_label["이름"]["new_value"] == "홍길동"
+
+    adapter2 = load(src)
+    try:
+        assert adapter2.get_cell(0, 0, 0).text.strip() == "이름"  # label 유지
+        assert adapter2.get_cell(0, 0, 1).text.strip() == "홍길동"  # value 기록
+        assert adapter2.get_cell(0, 1, 0).text.strip() == "부서"
+        assert adapter2.get_cell(0, 1, 1).text.strip() == "개발팀"
+    finally:
+        adapter2.close()
+
+
+def test_fill_form_pptx_label_right_value(tmp_path: Path) -> None:
+    """PPTX 2x2 라벨|값 패턴 — fill_form auto 가 오른쪽 값 셀에 set_cell."""
+    src = tmp_path / "form.pptx"
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(6), Inches(1.5))
+    tbl = shape.table
+    tbl.cell(0, 0).text = "보고일자"
+    tbl.cell(0, 1).text = "2026.01.01"  # 예시 값
+    tbl.cell(1, 0).text = "작성자"
+    tbl.cell(1, 1).text = "샘플"
+    prs.save(src)
+
+    adapter = load(src)
+    try:
+        result = adapter.fill_form({"보고일자": "2026.04.16", "작성자": "홍길동"})
+        adapter.save()
+    finally:
+        adapter.close()
+
+    assert result["not_found"] == []
+    filled_by_label = {f["label"]: f for f in result["filled"]}
+    assert filled_by_label["보고일자"]["action"] == "set_cell"
+    assert filled_by_label["보고일자"]["new_value"] == "2026.04.16"
+    assert filled_by_label["보고일자"]["old_value"] == "2026.01.01"
+
+
+def test_fill_form_not_found_records_missing(tmp_path: Path) -> None:
+    """존재하지 않는 라벨은 not_found 에 기록되고, strict=False 면 예외 없음."""
+    src = tmp_path / "form.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "이름"
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        result = adapter.fill_form({"이름": "홍길동", "없는라벨": "x"})
+    finally:
+        adapter.close()
+
+    assert "없는라벨" in result["not_found"]
+    assert any(f["label"] == "이름" for f in result["filled"])
+
+
+def test_fill_form_strict_raises_on_missing(tmp_path: Path) -> None:
+    """strict=True 면 매칭 실패 시 ValueError."""
+    src = tmp_path / "form.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        import pytest
+        with pytest.raises(ValueError):
+            adapter.fill_form({"없는라벨": "x"}, strict=True)
+    finally:
+        adapter.close()
+
+
+def test_fill_form_label_normalization(tmp_path: Path) -> None:
+    """공백/특수문자 차이 있는 라벨도 정규화해서 매칭 ('성 명' == '성명')."""
+    src = tmp_path / "form.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "성 명"  # 공백 있음
+    table.cell(0, 1).text = ""
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        # 사용자는 "성명" (공백 없이) 으로 넘김 — 매칭돼야
+        result = adapter.fill_form({"성명": "홍길동"})
+    finally:
+        adapter.close()
+
+    assert result["not_found"] == []
+    assert len(result["filled"]) == 1
