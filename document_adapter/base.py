@@ -52,6 +52,9 @@ class TableSchema:
     preview는 logical grid(rows × cols) 형태. 병합된 non-anchor 슬롯은 ``None``.
     merges는 span>1x1인 앵커 목록 (LLM이 병합 구조를 재구성할 수 있게).
     parent_path는 중첩 테이블 위치 표시 (예: ``"tables[0].cell(1,2)"``).
+    column_widths_cm / row_heights_cm 는 셀의 물리적 크기 (cm, 1자리 반올림).
+    LLM 이 긴 값을 좁은 셀에 넣어 오버플로 시키는 것을 방지하기 위한 힌트.
+    포맷/문서가 크기 정보를 제공하지 않으면 ``None``.
     """
     index: int
     rows: int
@@ -60,9 +63,11 @@ class TableSchema:
     location: str | None = None
     merges: list[MergeInfo] = field(default_factory=list)
     parent_path: str | None = None
+    column_widths_cm: list[float] | None = None
+    row_heights_cm: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "index": self.index,
             "rows": self.rows,
             "cols": self.cols,
@@ -71,13 +76,20 @@ class TableSchema:
             "preview": self.preview,
             "merges": [m.to_dict() for m in self.merges],
         }
+        if self.column_widths_cm is not None:
+            d["column_widths_cm"] = self.column_widths_cm
+        if self.row_heights_cm is not None:
+            d["row_heights_cm"] = self.row_heights_cm
+        return d
 
 
 @dataclass
 class CellContent:
-    """단일 셀의 전체 내용 + 병합/중첩 메타.
+    """단일 셀의 전체 내용 + 병합/중첩 메타 + 크기 힌트.
 
     프리뷰가 max_cell_len으로 잘리는 것과 달리 ``text``는 전체 본문을 보유.
+    width_cm / height_cm 는 LLM 이 긴 값 오버플로를 피할 수 있도록 제공하는
+    셀 크기 힌트 (anchor 기준 span 적용, cm 1자리). char_count 는 ``text`` 길이.
     """
     row: int
     col: int
@@ -87,9 +99,12 @@ class CellContent:
     anchor: tuple[int, int]           # 이 logical 위치의 앵커 좌표
     span: tuple[int, int]             # (row_span, col_span)
     nested_table_indices: list[int] = field(default_factory=list)
+    width_cm: float | None = None
+    height_cm: float | None = None
+    char_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "row": self.row,
             "col": self.col,
             "text": self.text,
@@ -99,6 +114,13 @@ class CellContent:
             "span": list(self.span),
             "nested_table_indices": self.nested_table_indices,
         }
+        if self.width_cm is not None:
+            d["width_cm"] = self.width_cm
+        if self.height_cm is not None:
+            d["height_cm"] = self.height_cm
+        if self.char_count is not None:
+            d["char_count"] = self.char_count
+        return d
 
 
 @dataclass

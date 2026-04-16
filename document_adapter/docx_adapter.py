@@ -30,6 +30,21 @@ from .base import (
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
+# OOXML EMU → cm (1 cm = 360000 EMU)
+_EMU_PER_CM = 360000
+
+
+def _emu_to_cm(emu: Any) -> float | None:
+    if emu is None:
+        return None
+    try:
+        v = int(emu)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return round(v / _EMU_PER_CM, 1)
+
 
 def _build_grid(table) -> tuple[dict[tuple[int, int], dict], int, int]:
     """(row,col) → {anchor, span, is_anchor, tc, cell} 매핑.
@@ -195,6 +210,16 @@ class DocxAdapter(DocumentAdapter):
                     if info["span"] != (1, 1):
                         merges.append(MergeInfo(anchor=info["anchor"], span=info["span"]))
 
+            # 셀 크기 힌트
+            col_widths = [
+                _emu_to_cm(getattr(col, "width", None)) for col in tbl.columns
+            ]
+            row_heights = [
+                _emu_to_cm(getattr(row, "height", None)) for row in tbl.rows
+            ]
+            col_widths_out = col_widths if any(v is not None for v in col_widths) else None
+            row_heights_out = row_heights if any(v is not None for v in row_heights) else None
+
             schemas.append(
                 TableSchema(
                     index=idx,
@@ -203,6 +228,8 @@ class DocxAdapter(DocumentAdapter):
                     preview=preview,
                     merges=merges,
                     parent_path=parent_path or None,
+                    column_widths_cm=col_widths_out,
+                    row_heights_cm=row_heights_out,
                 )
             )
         return schemas
@@ -231,6 +258,24 @@ class DocxAdapter(DocumentAdapter):
                 if id(child_tbl._tbl) in nested_tc_ids:
                     nested_indices.append(child_idx)
 
+        # 셀 크기 힌트 (anchor 기준 span 영역 합)
+        a_r, a_c = info["anchor"]
+        r_span, c_span = info["span"]
+        try:
+            cols_list = list(tbl.columns)
+            rows_list = list(tbl.rows)
+            width_emu = sum(
+                getattr(cols_list[i], "width", 0) or 0
+                for i in range(a_c, min(a_c + c_span, len(cols_list)))
+            )
+            height_emu = sum(
+                getattr(rows_list[i], "height", 0) or 0
+                for i in range(a_r, min(a_r + r_span, len(rows_list)))
+            )
+        except (IndexError, AttributeError):
+            width_emu = 0
+            height_emu = 0
+
         return CellContent(
             row=row,
             col=col,
@@ -240,6 +285,9 @@ class DocxAdapter(DocumentAdapter):
             anchor=info["anchor"],
             span=info["span"],
             nested_table_indices=nested_indices,
+            width_cm=_emu_to_cm(width_emu),
+            height_cm=_emu_to_cm(height_emu),
+            char_count=len(text),
         )
 
     # ---- editing ----
