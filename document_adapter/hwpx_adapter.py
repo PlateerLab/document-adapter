@@ -16,6 +16,7 @@ from lxml import etree
 
 from document_adapter.hwpx_core import (
     HP_CELL_ADDR,
+    HP_CELL_SZ,
     HP_P,
     HP_RUN,
     HP_SUBLIST,
@@ -47,6 +48,31 @@ from .base import (
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+# HWPX HU (Hwp Unit) → cm. 1 cm = 7200/2.54 ≈ 2834.6457 HU
+_HU_PER_CM = 2834.6456692913
+
+
+def _hu_to_cm(hu: Any) -> float | None:
+    if hu is None:
+        return None
+    try:
+        v = int(hu)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return round(v / _HU_PER_CM, 1)
+
+
+def _cell_size_cm(tc_elem) -> tuple[float | None, float | None]:
+    """<hp:tc>/<hp:cellSz>에서 (width_cm, height_cm) 추출. cellSpan 이 있는
+    병합 셀의 경우 HWPX 는 anchor cell 자체 크기를 cellSz 에 저장하므로
+    별도 span 합산 불필요."""
+    sz = tc_elem.find(HP_CELL_SZ)
+    if sz is None:
+        return None, None
+    return _hu_to_cm(sz.get("width")), _hu_to_cm(sz.get("height"))
 
 
 class HwpxAdapter(DocumentAdapter):
@@ -168,6 +194,11 @@ class HwpxAdapter(DocumentAdapter):
             ]
             merges: list[MergeInfo] = []
             seen_anchors: set[tuple[int, int]] = set()
+            # col/row → cm 매핑. colSpan/rowSpan 이 1 인 앵커 셀에서만 width/height
+            # 를 직접 수집 (다른 셀에 걸쳐있지 않아 깔끔). span>1 셀의 cellSz 는 anchor
+            # 위치 폭 전체를 표현하므로 일부 col/row 는 None 으로 남을 수 있다.
+            col_width_map: dict[int, float] = {}
+            row_height_map: dict[int, float] = {}
 
             for entry in iter_grid(tbl):
                 if entry.anchor in seen_anchors:
@@ -179,6 +210,17 @@ class HwpxAdapter(DocumentAdapter):
                         preview[entry.row][entry.column] = text[:max_cell_len]
                     if entry.span != (1, 1):
                         merges.append(MergeInfo(anchor=entry.anchor, span=entry.span))
+                    rs, cs = entry.span
+                    w_cm, h_cm = _cell_size_cm(entry.cell_element)
+                    if cs == 1 and w_cm is not None and entry.column not in col_width_map:
+                        col_width_map[entry.column] = w_cm
+                    if rs == 1 and h_cm is not None and entry.row not in row_height_map:
+                        row_height_map[entry.row] = h_cm
+
+            col_widths = [col_width_map.get(c) for c in range(cols)]
+            row_heights = [row_height_map.get(r) for r in range(rows)]
+            col_widths_out = col_widths if any(v is not None for v in col_widths) else None
+            row_heights_out = row_heights if any(v is not None for v in row_heights) else None
 
             schemas.append(
                 TableSchema(
@@ -188,6 +230,8 @@ class HwpxAdapter(DocumentAdapter):
                     preview=preview,
                     merges=merges,
                     parent_path=parent_path or None,
+                    column_widths_cm=col_widths_out,
+                    row_heights_cm=row_heights_out,
                 )
             )
         return schemas
@@ -209,6 +253,8 @@ class HwpxAdapter(DocumentAdapter):
                     if id(child_tbl) in nested_ids:
                         nested_indices.append(child_idx)
 
+        width_cm, height_cm = _cell_size_cm(tc)
+
         return CellContent(
             row=row,
             col=col,
@@ -218,6 +264,9 @@ class HwpxAdapter(DocumentAdapter):
             anchor=entry.anchor,
             span=entry.span,
             nested_table_indices=nested_indices,
+            width_cm=width_cm,
+            height_cm=height_cm,
+            char_count=len(text),
         )
 
     # ---- 편집 ----

@@ -15,6 +15,7 @@ HP_TR = f"{{{HP_NS}}}tr"
 HP_TC = f"{{{HP_NS}}}tc"
 HP_CELL_ADDR = f"{{{HP_NS}}}cellAddr"
 HP_CELL_SPAN = f"{{{HP_NS}}}cellSpan"
+HP_CELL_SZ = f"{{{HP_NS}}}cellSz"
 HP_SUBLIST = f"{{{HP_NS}}}subList"
 HS_SEC = f"{{{HS_NS}}}sec"
 
