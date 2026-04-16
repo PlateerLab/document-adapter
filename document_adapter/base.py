@@ -28,6 +28,91 @@ def _normalize_label(s: str) -> str:
     return _LABEL_NORMALIZE_RE.sub("", s).lower().strip()
 
 
+def _split_dot_path(label: str) -> tuple[str | None, str]:
+    """dot-path 분리: '피해자.금액' → ('피해자', '금액'). dot 없으면 (None, label)."""
+    if "." in label:
+        section, actual = label.rsplit(".", 1)
+        return section.strip() or None, actual.strip()
+    return None, label
+
+
+def _candidate_context_labels(
+    candidate: tuple[int, int, int, int, int, str],
+    tables_by_idx: dict[int, Any],
+) -> list[str]:
+    """candidate 셀 주변에서 section/row 라벨 후보 텍스트 수집.
+
+    전형적으로 양식은:
+      - 같은 table 의 (r, 0) 또는 (r-1..0, 0) 위치 anchor cell 이 섹션 헤더
+      - 또는 (r-1, c), (0, c) 가 header row
+    단순 휴리스틱: 같은 row 의 col=0 anchor text + 그 위로 올라가면서 나오는
+    col=0 anchor text 몇 개를 수집.
+    """
+    t_idx, r, c = candidate[0], candidate[1], candidate[2]
+    t = tables_by_idx.get(t_idx)
+    if t is None:
+        return []
+
+    preview = t.preview
+    labels: list[str] = []
+    # candidate row 자신 또는 위쪽으로 올라가며 col=0 의 가장 가까운 anchor 1개.
+    # 병합 anchor 의 rowSpan 으로 candidate row 가 덮이므로 그게 진짜 섹션 헤더.
+    # candidate 가 col=0 자체이면 자기 자신이 아니라 **위쪽** row 의 col=0 라벨.
+    candidate_col = candidate[2]
+    start_r = min(r, len(preview) - 1)
+    # col=0 후보인 경우 자기 자신을 skip
+    if candidate_col == 0:
+        start_r = r - 1
+    for cur_r in range(start_r, -1, -1):
+        if cur_r < 0:
+            break
+        row = preview[cur_r]
+        if not row:
+            continue
+        val = row[0]
+        if val:
+            labels.append(val.strip())
+            break
+    return labels
+
+
+def _candidate_matches_section(
+    candidate: tuple[int, int, int, int, int, str],
+    section_hint_norm: str,
+    tables_by_idx: dict[int, Any],
+) -> bool:
+    """candidate 의 주변 섹션 라벨에 section_hint_norm 이 포함되면 매칭."""
+    if not section_hint_norm:
+        return True
+    for ctx_label in _candidate_context_labels(candidate, tables_by_idx):
+        if section_hint_norm in _normalize_label(ctx_label):
+            return True
+    return False
+
+
+def _describe_cell_context(
+    candidate: tuple[int, int, int, int, int, str],
+    tables_by_idx: dict[int, Any],
+) -> str:
+    """LLM 에게 보여줄 candidate 셀의 사람 읽는 컨텍스트 문자열."""
+    labels = _candidate_context_labels(candidate, tables_by_idx)
+    if labels:
+        return " / ".join(labels)
+    t_idx, r, c = candidate[0], candidate[1], candidate[2]
+    t = tables_by_idx.get(t_idx)
+    loc = getattr(t, "location", None) if t else None
+    return loc or f"table[{t_idx}]"
+
+
+def _suggest_dot_path(
+    candidate: tuple[int, int, int, int, int, str],
+    tables_by_idx: dict[int, Any],
+) -> str:
+    """ambiguous hint 용 dot-path prefix 후보 (첫 후보의 섹션 라벨)."""
+    labels = _candidate_context_labels(candidate, tables_by_idx)
+    return labels[-1] if labels else "섹션"
+
+
 # ---- custom exceptions -----------------------------------------------------
 # 표준 예외를 상속해 기존 ``except ValueError/IndexError`` 흐름과 호환.
 
@@ -233,9 +318,14 @@ class DocumentAdapter(ABC):
         "성명" 같은 **사람이 읽는 라벨** 로 값을 넣게 하는 API. 양식 문서의
         전형적인 라벨-값 패턴 (라벨 오른쪽 또는 아래 셀이 값) 을 자동 탐지한다.
 
+        **Dot-path 로 ambiguous 해소**: 한 양식에 같은 라벨이 여러 번 등장하면
+        (예: "금액" 이 피해자 섹션, 지급정지계좌 섹션, 피해금이전계좌 섹션 각각)
+        ``"피해자.금액"`` 처럼 dot-path 로 section hint 를 지정하면 section 컨텍스트가
+        일치하는 후보만 선택한다.
+
         Args:
             data: {라벨: 값} dict. 라벨은 셀 텍스트와 whitespace/특수문자 제거
-                후 정규화 비교 (예: "성 명" == "성명").
+                후 정규화 비교 (예: "성 명" == "성명"). "섹션힌트.라벨" 형태도 허용.
             direction: 값 셀 탐색 방향.
                 - "auto" (기본): right → below → same 순서로 빈 셀 우선
                 - "right": 라벨 셀 오른쪽
@@ -247,7 +337,8 @@ class DocumentAdapter(ABC):
             {
               "filled":   [{"label", "table_index", "row", "col", "action", "old_value", "new_value"}],
               "not_found": [라벨 목록],
-              "ambiguous": [{"label", "candidates": [(t,r,c), ...]}],
+              "ambiguous": [{"label", "candidates": [{"table_index", "row", "col", "context"}, ...],
+                             "hint": "dot-path 예시 (예: '피해자.금액')"}],
             }
         """
         if direction not in ("auto", "right", "below", "same"):
@@ -259,6 +350,7 @@ class DocumentAdapter(ABC):
         # 동일 라벨이 여러 곳에 있으면 ambiguous 로 분류.
         label_index: dict[str, list[tuple[int, int, int, int, int, str]]] = {}
         tables = self.get_tables(preview_rows=10_000, max_cell_len=10_000)
+        tables_by_idx = {t.index: t for t in tables}
         for t in tables:
             merge_map = {m.anchor: m.span for m in t.merges}
             for r, row in enumerate(t.preview):
@@ -273,31 +365,65 @@ class DocumentAdapter(ABC):
                         (t.index, r, c, rs, cs, val)
                     )
 
+        # user_keys 는 dot-path 분리 후 뒷부분 기준으로 만든다.
+        # "피해자.금액" 과 "지급정지.금액" 이 섞여 있어도 "금액" 단일로 보호.
+        user_keys = {_normalize_label(_split_dot_path(k)[1]) for k in data.keys()}
+
         filled: list[dict[str, Any]] = []
         not_found: list[str] = []
         ambiguous: list[dict[str, Any]] = []
 
         for label, value in data.items():
-            key = _normalize_label(label)
-            candidates = label_index.get(key, [])
+            section_hint, actual_label = _split_dot_path(label)
+            key = _normalize_label(actual_label)
+            all_candidates = label_index.get(key, [])
+
+            # dot-path 가 있으면 section_hint 로 candidate 필터
+            if section_hint and all_candidates:
+                hint_norm = _normalize_label(section_hint)
+                filtered = [
+                    cand for cand in all_candidates
+                    if _candidate_matches_section(cand, hint_norm, tables_by_idx)
+                ]
+                if filtered:
+                    candidates = filtered
+                else:
+                    # hint 와 매칭 안 되면 원본 후보 유지 (ambiguous 또는 single)
+                    candidates = all_candidates
+            else:
+                candidates = all_candidates
+
             if not candidates:
                 if strict:
                     raise ValueError(f"label not found: {label!r}")
                 not_found.append(label)
                 continue
             if len(candidates) > 1:
-                # 여러 곳에 있으면 채우지 않음 — LLM 이 명확히 지정하게 유도
+                # 여러 곳 — 각 후보의 section context 수집해서 LLM 이 구분 가능하게
                 ambiguous.append({
                     "label": label,
-                    "candidates": [(t, r, c) for (t, r, c, *_) in candidates],
+                    "candidates": [
+                        {
+                            "table_index": cand[0],
+                            "row": cand[1],
+                            "col": cand[2],
+                            "context": _describe_cell_context(cand, tables_by_idx),
+                        }
+                        for cand in candidates
+                    ],
+                    "hint": (
+                        f"dot-path 로 재호출 예시: "
+                        f"'{_suggest_dot_path(candidates[0], tables_by_idx)}.{actual_label}'"
+                    ),
                 })
                 continue
 
             t_idx, r, c, rs, cs, current_text = candidates[0]
-            # "옆 셀이 다른 라벨이면 skip" 판단에 사용자가 요청한 라벨들만 cross-check.
-            # (label_index 전체를 쓰면 값 셀 텍스트까지 라벨로 오판 → 덮어쓰기 실패)
-            user_keys = {_normalize_label(k) for k in data.keys()}
-            other_label_keys = user_keys - {key}
+            # auto 모드에서 인접 라벨 오염 방지 — 문서 내 **모든 anchor cell 텍스트**
+            # 를 보호 대상으로. (값 셀이 포함되어 덮어쓰기 차단될 수 있지만 라벨 파괴가
+            # 더 치명적이라 보수적 default. 예시값이 있는 양식에서 값 셀을 덮어쓰려면
+            # direction="right"/"below" 로 명시.)
+            other_label_keys = set(label_index.keys()) - {key}
             action, coord, old = self._fill_one_cell(
                 t_idx, r, c, rs, cs, str(value), direction, other_label_keys
             )
@@ -372,13 +498,18 @@ class DocumentAdapter(ABC):
                 return "append_to_cell", (t_idx, target_r, target_c), old
 
             # right / below
+            if direction == "auto" and not cell.is_anchor:
+                # target 이 병합의 non-anchor 면 anchor 로 redirect 되어 엉뚱한 셀에
+                # 쓰일 위험 (예: 스페이서 행의 병합 anchor). auto 에서는 skip 하고
+                # 다음 mode 로.
+                continue
             if direction == "auto" and target_key and target_key in other_label_keys:
                 # 옆 셀이 다른 라벨 → 덮어쓰면 라벨 손상. 다음 mode 시도.
                 continue
             try:
                 old = self.set_cell(
                     t_idx, target_r, target_c, value,
-                    allow_merge_redirect=not cell.is_anchor,
+                    allow_merge_redirect=(direction != "auto"),
                 )
             except MergedCellWriteError:
                 continue

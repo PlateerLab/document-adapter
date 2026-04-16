@@ -7,6 +7,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-04-16
+
+### Added
+- **fill_form ambiguous UX 개선**
+  - 반환 `ambiguous[].candidates` 가 `(t, r, c)` 튜플 대신 `{table_index, row, col,
+    context}` dict. `context` 는 candidate 셀의 섹션 컨텍스트 (같은 표의 가까운
+    col=0 anchor 라벨 — HWPX 에서 "피해자정 보", "지급정지요청계좌" 같은 rowSpan
+    섹션 헤더 자동 추출).
+  - `ambiguous[].hint` 필드 추가 — dot-path 재호출 예시 템플릿 제공.
+- **Dot-path 섹션 해소** — `fill_form({"재무.금액": "...", "영업.금액": "..."})`.
+  section hint 로 candidate 중 매칭되는 것만 선택. normalize 후 substring 매칭.
+
+### Changed
+- **`fill_form` auto 기본값이 보수적으로 변경** — 기존 값이 있는 셀은 다른 라벨로
+  간주하고 skip, 최종 same append 로 fallback. **이전 v0.7.0 에서 예시값 있는 셀을
+  덮어쓰던 동작이 바뀜**. 예시값 덮어쓰기가 목적이면 `direction="right"` 또는
+  `"below"` 명시 필요. 양식 문서의 라벨 오염 방지를 우선.
+- auto 모드에서 target 이 병합 non-anchor 면 skip (anchor redirect 로 엉뚱한
+  스페이서 셀에 쓰이는 것 방지).
+
+### Fixed
+- fill_form 이 인접한 다른 라벨을 덮어쓰던 버그 (label_index 전체를 보호 대상으로
+  확장).
+- candidate context 수집 시 자기 자신 (col=0) 포함하던 버그.
+
 ## [0.7.0] — 2026-04-16
 
 ### Added

@@ -1085,7 +1085,11 @@ def test_fill_form_docx_label_right_value(tmp_path: Path) -> None:
 
 
 def test_fill_form_pptx_label_right_value(tmp_path: Path) -> None:
-    """PPTX 2x2 라벨|값 패턴 — fill_form auto 가 오른쪽 값 셀에 set_cell."""
+    """PPTX 2x2 라벨|값 패턴 — 예시값 있는 셀 덮어쓰려면 direction='right' 명시.
+
+    auto 는 보수적 기본값이라 기존 값이 있는 셀은 다른 라벨로 간주하고 skip,
+    최종적으로 same append. 예시값 덮어쓰기가 의도면 direction 명시 필요.
+    """
     src = tmp_path / "form.pptx"
     prs = Presentation()
     prs.slide_width = Inches(10)
@@ -1101,7 +1105,10 @@ def test_fill_form_pptx_label_right_value(tmp_path: Path) -> None:
 
     adapter = load(src)
     try:
-        result = adapter.fill_form({"보고일자": "2026.04.16", "작성자": "홍길동"})
+        result = adapter.fill_form(
+            {"보고일자": "2026.04.16", "작성자": "홍길동"},
+            direction="right",
+        )
         adapter.save()
     finally:
         adapter.close()
@@ -1111,6 +1118,41 @@ def test_fill_form_pptx_label_right_value(tmp_path: Path) -> None:
     assert filled_by_label["보고일자"]["action"] == "set_cell"
     assert filled_by_label["보고일자"]["new_value"] == "2026.04.16"
     assert filled_by_label["보고일자"]["old_value"] == "2026.01.01"
+
+
+def test_fill_form_dot_path_resolves_ambiguous(tmp_path: Path) -> None:
+    """동일 라벨이 여러 섹션에 있으면 dot-path 로 섹션 지정해 해소."""
+    src = tmp_path / "form.docx"
+    doc = Document()
+    t = doc.add_table(rows=4, cols=2)
+    t.cell(0, 0).text = "재무"
+    t.cell(0, 1).text = ""
+    t.cell(1, 0).text = "금액"
+    t.cell(1, 1).text = ""
+    t.cell(2, 0).text = "영업"
+    t.cell(2, 1).text = ""
+    t.cell(3, 0).text = "금액"
+    t.cell(3, 1).text = ""
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        r_ambig = adapter.fill_form({"금액": "1"})
+        assert len(r_ambig["ambiguous"]) == 1
+        assert r_ambig["ambiguous"][0]["label"] == "금액"
+        assert len(r_ambig["ambiguous"][0]["candidates"]) == 2
+        contexts = [c["context"] for c in r_ambig["ambiguous"][0]["candidates"]]
+        assert any("재무" in ctx for ctx in contexts)
+        assert any("영업" in ctx for ctx in contexts)
+
+        r_resolved = adapter.fill_form(
+            {"재무.금액": "100", "영업.금액": "200"},
+            direction="right",
+        )
+        assert r_resolved["ambiguous"] == []
+        assert len(r_resolved["filled"]) == 2
+    finally:
+        adapter.close()
 
 
 def test_fill_form_not_found_records_missing(tmp_path: Path) -> None:
