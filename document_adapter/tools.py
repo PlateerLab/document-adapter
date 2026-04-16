@@ -173,6 +173,53 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_shapes",
+        "description": (
+            "**PPTX 전용**. 표 외 shape (textbox / placeholder / 도형 내 텍스트) 목록을 "
+            "반환한다. PPTX 는 17 슬라이드에 걸쳐 표 4 개 외에 수십 개의 textbox / "
+            "placeholder 로 내용이 채워져 있으므로, 전체 편집에는 get_tables 만으로 "
+            "부족하다. "
+            "반환: shapes[] — 각 항목에 slide_index (1-based), shape_id (슬라이드 내 고유 "
+            "숫자), name, kind (placeholder/text_box), text/text_preview, placeholder_type. "
+            "DOCX/HWPX 는 빈 리스트 반환 (표와 paragraph 중심이라 shape 편집 개념 약함)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slide_index": {
+                    "type": "integer",
+                    "description": "1-based. 생략 시 전체 슬라이드.",
+                },
+                "min_text_len": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "이 값 미만 길이의 텍스트 shape 는 제외.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "set_shape_text",
+        "description": (
+            "**PPTX 전용**. shape (textbox/placeholder) 의 텍스트를 교체한다. run-level "
+            "포맷 (폰트/크기/색상) 은 보존. get_shapes 로 slide_index + shape_id 파악 후 "
+            "호출. 표 셀은 이 도구 아닌 set_cell 을 쓸 것."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slide_index": {"type": "integer", "description": "1-based"},
+                "shape_id": {"type": "integer"},
+                "text": {"type": "string"},
+                "output_path": {"type": "string"},
+            },
+            "required": ["path", "slide_index", "shape_id", "text"],
+        },
+    },
+    {
         "name": "fill_form",
         "description": (
             "라벨 이름으로 값 셀을 자동 탐지해 **일괄 채우기**. 좌표 (table_index, row, col) "
@@ -364,6 +411,43 @@ def append_row(path: str, table_index: int, values: list[str],
     }
 
 
+def get_shapes(path: str, slide_index: int | None = None,
+               min_text_len: int = 1) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        shapes = doc.get_shapes(slide_index=slide_index, min_text_len=min_text_len)
+    finally:
+        doc.close()
+    return {
+        "format": doc.format,
+        "source": str(path),
+        "shape_count": len(shapes),
+        "shapes": [s.to_dict() for s in shapes],
+    }
+
+
+def set_shape_text(path: str, slide_index: int, shape_id: int, text: str,
+                   output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        old = doc.set_shape_text(slide_index, shape_id, text)
+        doc.save()
+    finally:
+        doc.close()
+
+    return {
+        "output_path": str(target),
+        "slide_index": slide_index,
+        "shape_id": shape_id,
+        "previous_text": old,
+        "new_text": text,
+    }
+
+
 def fill_form(path: str, data: dict[str, str],
               direction: str = "auto", strict: bool = False,
               output_path: str | None = None) -> dict[str, Any]:
@@ -392,6 +476,8 @@ TOOL_HANDLERS = {
     "append_to_cell": append_to_cell,
     "append_row": append_row,
     "fill_form": fill_form,
+    "get_shapes": get_shapes,
+    "set_shape_text": set_shape_text,
 }
 
 

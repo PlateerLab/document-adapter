@@ -23,6 +23,7 @@ from .base import (
     MergeInfo,
     MergedCellWriteError,
     NotImplementedForFormat,
+    ShapeInfo,
     TableIndexError,
     TableSchema,
 )
@@ -268,6 +269,76 @@ class PptxAdapter(DocumentAdapter):
             width_cm=_emu_to_cm(width_emu),
             height_cm=_emu_to_cm(height_emu),
             char_count=len(text),
+        )
+
+    # ---- shape text (v0.8+) ----
+    def get_shapes(
+        self,
+        slide_index: int | None = None,
+        min_text_len: int = 1,
+        max_preview: int = 40,
+    ) -> list[ShapeInfo]:
+        """표 외 shape (textbox / placeholder / 도형 텍스트) 수집.
+
+        ``slide_index`` 는 1-based. None 이면 전체.
+        ``min_text_len`` 미만의 텍스트는 제외 (0 을 주면 빈 shape 도 포함).
+        """
+        shapes_out: list[ShapeInfo] = []
+        for s_idx, slide in enumerate(self._prs.slides, 1):
+            if slide_index is not None and s_idx != slide_index:
+                continue
+            for shape in slide.shapes:
+                if shape.has_table:
+                    continue  # 표는 get_tables 로
+                if not shape.has_text_frame:
+                    continue
+                text = (shape.text_frame.text or "").strip()
+                if len(text) < min_text_len:
+                    continue
+                ph_type = None
+                try:
+                    ph = shape.placeholder_format
+                    if ph is not None and ph.type is not None:
+                        ph_type = str(ph.type).rsplit(".", 1)[-1]
+                except ValueError:
+                    pass
+                kind = "placeholder" if ph_type else "text_box"
+                shapes_out.append(
+                    ShapeInfo(
+                        slide_index=s_idx,
+                        shape_id=shape.shape_id,
+                        name=shape.name,
+                        kind=kind,
+                        has_text=bool(text),
+                        text=text,
+                        text_preview=text[:max_preview],
+                        placeholder_type=ph_type,
+                    )
+                )
+        return shapes_out
+
+    def set_shape_text(
+        self,
+        slide_index: int,
+        shape_id: int,
+        text: str,
+    ) -> str:
+        """shape 의 텍스트를 text 로 교체. 기존 run-level 포맷 보존."""
+        for s_idx, slide in enumerate(self._prs.slides, 1):
+            if s_idx != slide_index:
+                continue
+            for shape in slide.shapes:
+                if shape.shape_id != shape_id:
+                    continue
+                if not shape.has_text_frame:
+                    raise ValueError(
+                        f"shape {shape_id} on slide {slide_index} has no text frame"
+                    )
+                old = shape.text_frame.text or ""
+                _set_text_frame_preserving_format(shape.text_frame, text)
+                return old
+        raise ValueError(
+            f"shape not found: slide_index={slide_index}, shape_id={shape_id}"
         )
 
     # ---- editing ----

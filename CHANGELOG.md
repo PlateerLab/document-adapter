@@ -7,6 +7,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-04-17
+
+### Added (PPTX shape-level 편집 — 표 외 텍스트 직접 편집)
+- **`get_shapes(slide_index=None, min_text_len=1)`** — PPTX 의 표 외 shape
+  (textbox / placeholder / 도형 내 텍스트) 목록. 각 항목에 `slide_index` (1-based),
+  `shape_id` (슬라이드 내 고유 숫자), `name`, `kind`, `text` / `text_preview`,
+  `placeholder_type` 포함.
+- **`set_shape_text(slide_index, shape_id, text)`** — shape 의 텍스트를 교체.
+  run-level 포맷 (폰트/크기/색상) 보존.
+- MCP 도구 2 개 신규 등록 → 총 **9 개 도구**.
+- `ShapeInfo` dataclass 추가 (`base.py`).
+
+### Motivation
+실전 공공 PPTX (양산상공회의소 17슬라이드 정책 발표) 에 LLM 이 fill_form 만
+호출하면 표 4 개만 채워지고 **나머지 13 슬라이드의 shape 텍스트 (textbox /
+placeholder / 도형 라벨)** 는 건드릴 수 없었음. 보고서형 PPTX 편집 완성도를
+위해 shape-level API 추가. 17 슬라이드 × 90 개 shape 까지 편집 가능.
+
+### Notes
+- DOCX / HWPX 는 `get_shapes()` 빈 리스트, `set_shape_text()` 는
+  `NotImplementedForFormat` — 해당 포맷은 표와 paragraph 중심이라 shape 편집
+  개념이 약함.
+
 ## [0.7.3] — 2026-04-17
 
 ### Fixed

@@ -184,6 +184,38 @@ class TableSchema:
 
 
 @dataclass
+class ShapeInfo:
+    """PPTX 의 표 외 shape (textbox / placeholder / 도형 내 텍스트) 메타.
+
+    ``shape_id`` 는 슬라이드 내 고유 숫자. ``name`` 은 사람 이름 (예: "Title 1").
+    ``text`` 는 full text. ``text_preview`` 는 40자 컷.
+    """
+    slide_index: int
+    shape_id: int
+    name: str
+    kind: str                  # shape 종류 (placeholder / text_box / group / picture 등)
+    has_text: bool
+    text: str = ""
+    text_preview: str = ""
+    placeholder_type: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {
+            "slide_index": self.slide_index,
+            "shape_id": self.shape_id,
+            "name": self.name,
+            "kind": self.kind,
+            "has_text": self.has_text,
+            "text_preview": self.text_preview,
+        }
+        if self.text and self.text != self.text_preview:
+            d["text"] = self.text
+        if self.placeholder_type:
+            d["placeholder_type"] = self.placeholder_type
+        return d
+
+
+@dataclass
 class CellContent:
     """단일 셀의 전체 내용 + 병합/중첩 메타 + 크기 힌트.
 
@@ -303,6 +335,35 @@ class DocumentAdapter(ABC):
     @abstractmethod
     def append_row(self, table_index: int, values: list[str]) -> None:
         """표 끝에 새 행 추가."""
+
+    # ---- shape text (v0.8+, PPTX 전용) ----
+    def get_shapes(
+        self,
+        slide_index: int | None = None,
+        min_text_len: int = 1,
+        max_preview: int = 40,
+    ) -> list[ShapeInfo]:
+        """표 외 shape (textbox / placeholder / 도형 텍스트) 목록.
+
+        PPTX 에서만 실질적 의미가 있다. DOCX/HWPX 는 기본 빈 리스트 반환
+        (해당 포맷은 표와 paragraph 위주로 편집).
+        """
+        return []
+
+    def set_shape_text(
+        self,
+        slide_index: int,
+        shape_id: int,
+        text: str,
+    ) -> str:
+        """shape 의 텍스트 프레임을 text 로 교체. 기존 run-level 포맷 보존.
+
+        Returns: 기존 텍스트.
+        PPTX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support shape-level text editing"
+        )
 
     # ---- label-based form filling ----
     def fill_form(
