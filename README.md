@@ -14,14 +14,15 @@
 
 ## 지원 포맷
 
-| 포맷 | 백엔드 | 템플릿 렌더 | 표 읽기 | 셀 수정 | 행 추가 |
-|---|---|---|---|---|---|
-| `.docx` | `docxtpl` + `python-docx` | Jinja2 (`{%tr%}` loop 포함) | ✅ | ✅ | ✅ |
-| `.pptx` | `python-pptx` | `{{key}}` 치환 | ✅ (슬라이드 위치 포함) | ✅ | ❌ (미지원) |
-| `.hwpx` | `python-hwpx` (Pure Python) | `{{key}}` 치환 | ✅ | ✅ | ❌ (미지원) |
+| 포맷 | 백엔드 | 템플릿 렌더 | 표 읽기 | 병합 셀 인지 | 중첩 테이블 | 셀 수정 | 행 추가 |
+|---|---|---|---|---|---|---|---|
+| `.docx` | `docxtpl` + `python-docx` | Jinja2 (`{%tr%}` loop 포함) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `.pptx` | `python-pptx` | `{{key}}` 치환 | ✅ (슬라이드 위치 포함) | ✅ | — (포맷 미지원) | ✅ | ❌ (미지원) |
+| `.hwpx` | `python-hwpx` (Pure Python) | `{{key}}` 치환 | ✅ | ✅ | ✅ | ✅ | ✅ (v0.3+) |
 
 - HWPX는 한컴오피스 설치가 **불필요**합니다 (macOS/Linux 서버에서 그대로 동작).
 - 구버전 `.hwp`(바이너리 포맷)는 지원하지 않습니다 — `.hwpx`로 변환 후 사용하세요.
+- 병합 셀: 3개 포맷 모두 preview에 `null` 슬롯 + `merges` 메타로 구조 노출. non-anchor 좌표에 쓰기는 `MergedCellWriteError`로 거부.
 
 ## 설치
 
@@ -67,13 +68,49 @@ doc.save("report_filled.docx")
 
 # 3. 기존 양식 파일의 표 셀 수정
 doc = load("checklist.docx")
+
+# 빈 셀 값 교체
 old = doc.set_cell(table_index=1, row=1, col=1, value="○○전자")
-doc.append_row(1, ["새 항목", "값"])  # DOCX만 지원
+
+# 라벨이 있는 셀 ("성 명")에 값 추가 → "성 명  홍길동"
+doc.append_to_cell(table_index=2, row=0, col=0, value="홍길동")
+
+# 셀 전체 텍스트 + 병합 메타 조회 (preview의 40자 잘림 없이)
+cell = doc.get_cell(table_index=1, row=3, col=2)
+print(cell.text, cell.is_anchor, cell.span, cell.nested_table_indices)
+
+# DOCX/HWPX는 행 추가 지원
+doc.append_row(1, ["새 항목", "값"])
+
 doc.save("checklist_filled.docx")
 doc.close()
 ```
 
 확장자로 자동 분기되므로 `.pptx` / `.hwpx`도 동일한 API를 사용합니다.
+
+### 병합 셀 인지 동작 (v0.2+)
+
+```python
+schema = doc.get_schema()
+t = schema.tables[0]
+
+# preview는 logical grid. 병합된 non-anchor 슬롯은 None.
+# [['HEADER', None, None], ['A1', 'A2', 'A3']]
+print(t.preview)
+
+# merges는 span>1x1인 anchor 목록
+# [MergeInfo(anchor=(0,0), span=(1,3))]
+print(t.merges)
+
+# non-anchor에 쓰기 시도하면 MergedCellWriteError (ValueError 서브클래스)
+try:
+    doc.set_cell(0, 0, 2, "X")
+except ValueError as e:
+    print(e)  # "cell (0,2) is part of a merged region anchored at (0,0)..."
+
+# 의도적으로 앵커로 리디렉트하고 싶다면
+doc.set_cell(0, 0, 2, "X", allow_merge_redirect=True)  # 경고 + 실제로 (0,0) 수정
+```
 
 ## MCP 서버로 사용 — Claude Desktop / Claude Code
 
@@ -138,39 +175,45 @@ resp = client.messages.create(
 
 전체 agent loop 예시는 [`examples/claude_api_example.py`](examples/claude_api_example.py) 참고.
 
-## 노출되는 4개 도구
+## 노출되는 도구
 
 | 도구 | 설명 |
 |---|---|
 | `inspect_document` | 문서 구조(placeholders, tables)를 JSON으로 반환. **항상 첫 호출로 사용** |
 | `render_template` | `{{key}}`를 context dict 값으로 치환해 새 파일 저장 |
-| `set_cell` | 특정 표의 `(row, col)` 셀 값 교체 |
-| `append_row` | 표 끝에 새 행 추가 (DOCX 전용) |
+| `get_cell` | 셀 전체 텍스트 + 병합/중첩 메타 반환 (preview의 40자 잘림 없이) |
+| `set_cell` | 특정 표의 `(row, col)` 셀 값 교체 (병합 anchor만) |
+| `append_to_cell` | 기존 텍스트 뒤에 값 덧붙임 (라벨 유지용, 예: `"성 명"` → `"성 명  홍길동"`) |
+| `append_row` | 표 끝에 새 행 추가 (DOCX/HWPX 지원) |
 
-### `inspect_document` 반환 예시
+### `inspect_document` 반환 예시 (v0.2+)
 
 ```json
 {
-  "format": "docx",
-  "source": "/path/to/checklist.docx",
+  "format": "hwpx",
+  "source": "/path/to/form.hwpx",
   "placeholders": [],
   "tables": [
     {
-      "index": 1,
-      "rows": 7,
-      "cols": 2,
+      "index": 0,
+      "rows": 28,
+      "cols": 16,
       "location": null,
+      "parent_path": null,
       "preview": [
-        {"row": 0, "cells": ["항목", "기입 내용"]},
-        {"row": 1, "cells": ["고객사 / 조직", ""]},
-        {"row": 2, "cells": ["현업 담당부서 / 책임자", ""]}
+        ["포상금 지급신청서", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        ["접수번호", null, null, "", "접수일자", null, null, "", ...]
+      ],
+      "merges": [
+        {"anchor": [0, 0], "span": [1, 16]},
+        {"anchor": [1, 0], "span": [1, 3]}
       ]
     }
   ]
 }
 ```
 
-LLM은 이 preview를 보고 **"빈 셀이 어디 있는지 / 어떤 값을 넣어야 하는지"** 를 판단하여 `set_cell`을 호출합니다.
+LLM은 이 preview를 보고 **"빈 셀이 어디 있는지 / 어떤 값을 넣어야 하는지"** 를 판단하여 `set_cell` / `append_to_cell`을 호출합니다. `null` 슬롯은 병합된 영역이며 `merges`의 anchor 좌표로만 쓸 수 있습니다.
 
 ## 템플릿 작성 규칙
 

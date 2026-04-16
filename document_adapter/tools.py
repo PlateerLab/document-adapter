@@ -66,13 +66,33 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_cell",
+        "description": (
+            "셀 하나의 전체 내용과 병합/중첩 메타를 반환한다. "
+            "inspect_document의 preview는 max_cell_len으로 잘리지만 get_cell은 전체 텍스트를 돌려준다. "
+            "병합 영역 내부의 non-anchor 좌표로 호출해도 에러 없이 anchor 셀의 내용을 반환한다 "
+            "(is_anchor=false, anchor/span 필드로 구조 확인 가능). "
+            "nested_table_indices: 셀 안에 중첩 테이블이 있을 경우 그 flat index 목록 (DOCX/HWPX)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "table_index": {"type": "integer"},
+                "row": {"type": "integer"},
+                "col": {"type": "integer"},
+            },
+            "required": ["path", "table_index", "row", "col"],
+        },
+    },
+    {
         "name": "set_cell",
         "description": (
             "특정 표의 셀 값을 교체한다. table_index는 inspect_document의 tables 배열 인덱스. "
-            "PPTX는 슬라이드 경계와 무관한 전역 index. "
-            "HWPX 병합 셀 주의: inspect_document의 tables[i].merges에 나온 anchor 좌표로만 "
-            "수정 가능. 병합 영역 내부의 non-anchor 좌표로 호출하면 ValueError가 발생하며, "
-            "preview의 해당 슬롯은 null로 표시된다."
+            "3개 포맷(DOCX/PPTX/HWPX) 모두 병합 셀을 인지한다: inspect_document의 "
+            "tables[i].merges에 나온 anchor 좌표로만 수정 가능. 병합 영역 내부의 non-anchor "
+            "좌표로 호출하면 MergedCellWriteError(ValueError 호환)가 발생하며, preview의 해당 "
+            "슬롯은 null로 표시된다."
         ),
         "input_schema": {
             "type": "object",
@@ -89,9 +109,41 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "allow_merge_redirect": {
                     "type": "boolean",
                     "description": (
-                        "HWPX 전용. true면 병합 영역 non-anchor 좌표 호출 시 "
-                        "앵커로 자동 리디렉트(권장 X, 구조 잘못 이해한 호출을 숨김)."
+                        "true면 병합 영역 non-anchor 좌표 호출 시 앵커로 자동 리디렉트 + 경고 "
+                        "(권장 X, 구조 잘못 이해한 호출을 숨김)."
                     ),
+                    "default": False,
+                },
+            },
+            "required": ["path", "table_index", "row", "col", "value"],
+        },
+    },
+    {
+        "name": "append_to_cell",
+        "description": (
+            "기존 셀 텍스트 뒤에 separator + value를 덧붙인다. "
+            "한국 관공서 폼처럼 '성  명' 같은 라벨 셀 뒤에 값을 붙이는 용도로 유용. "
+            "빈 셀이면 separator 없이 value만 기록. set_cell과 동일하게 병합 anchor만 수정 가능."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "table_index": {"type": "integer"},
+                "row": {"type": "integer"},
+                "col": {"type": "integer"},
+                "value": {"type": "string", "description": "추가할 값"},
+                "separator": {
+                    "type": "string",
+                    "description": "기존 텍스트와 값 사이 구분자 (기본 '  ')",
+                    "default": "  ",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+                "allow_merge_redirect": {
+                    "type": "boolean",
                     "default": False,
                 },
             },
@@ -101,8 +153,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "append_row",
         "description": (
-            "표 끝에 새 행을 추가한다. **DOCX만 지원** — PPTX/HWPX는 API 미지원으로 에러 반환. "
-            "그 경우 템플릿 단계에서 충분한 빈 행을 두고 set_cell로 채워야 한다."
+            "표 끝에 새 행을 추가한다. **DOCX/HWPX 지원**, PPTX는 API 미지원으로 에러 반환. "
+            "HWPX는 마지막 행을 deepcopy해 스타일/폭 상속. PPTX는 템플릿에 여분 행을 두고 "
+            "set_cell로 채우는 방식을 권장."
         ),
         "input_schema": {
             "type": "object",
@@ -172,6 +225,15 @@ def render_template(path: str, context: dict[str, Any],
     }
 
 
+def get_cell(path: str, table_index: int, row: int, col: int) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        cell = doc.get_cell(table_index, row, col)
+        return cell.to_dict()
+    finally:
+        doc.close()
+
+
 def set_cell(path: str, table_index: int, row: int, col: int, value: str,
              output_path: str | None = None,
              allow_merge_redirect: bool = False) -> dict[str, Any]:
@@ -181,15 +243,10 @@ def set_cell(path: str, table_index: int, row: int, col: int, value: str,
 
     doc = load(target)
     try:
-        # allow_merge_redirect는 HWPX 어댑터만 지원하므로 키워드 인자로 전달 시도하고
-        # 포맷이 지원 안 하면 무시.
-        try:
-            old = doc.set_cell(
-                table_index, row, col, value,
-                allow_merge_redirect=allow_merge_redirect,
-            )
-        except TypeError:
-            old = doc.set_cell(table_index, row, col, value)
+        old = doc.set_cell(
+            table_index, row, col, value,
+            allow_merge_redirect=allow_merge_redirect,
+        )
         doc.save()
     finally:
         doc.close()
@@ -201,6 +258,36 @@ def set_cell(path: str, table_index: int, row: int, col: int, value: str,
         "col": col,
         "previous_value": old,
         "new_value": value,
+    }
+
+
+def append_to_cell(path: str, table_index: int, row: int, col: int, value: str,
+                   separator: str = "  ",
+                   output_path: str | None = None,
+                   allow_merge_redirect: bool = False) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        old = doc.append_to_cell(
+            table_index, row, col, value,
+            separator=separator,
+            allow_merge_redirect=allow_merge_redirect,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    return {
+        "output_path": str(target),
+        "table_index": table_index,
+        "row": row,
+        "col": col,
+        "previous_value": old,
+        "appended_value": value,
+        "separator": separator,
     }
 
 
@@ -232,7 +319,9 @@ def append_row(path: str, table_index: int, values: list[str],
 TOOL_HANDLERS = {
     "inspect_document": inspect_document,
     "render_template": render_template,
+    "get_cell": get_cell,
     "set_cell": set_cell,
+    "append_to_cell": append_to_cell,
     "append_row": append_row,
 }
 

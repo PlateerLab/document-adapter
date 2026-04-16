@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import re
 import warnings
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -26,7 +27,16 @@ logging.getLogger("hwpx").setLevel(logging.ERROR)
 
 from hwpx.document import HwpxDocument
 
-from .base import DocumentAdapter, MergeInfo, TableSchema
+from .base import (
+    CellContent,
+    CellOutOfBoundsError,
+    DocumentAdapter,
+    MergeInfo,
+    MergedCellWriteError,
+    NotImplementedForFormat,
+    TableIndexError,
+    TableSchema,
+)
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
@@ -34,6 +44,12 @@ _HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _HP_T = f"{{{_HP_NS}}}t"
 _HP_RUN = f"{{{_HP_NS}}}run"
 _HP_TBL = f"{{{_HP_NS}}}tbl"
+_HP_TR = f"{{{_HP_NS}}}tr"
+_HP_TC = f"{{{_HP_NS}}}tc"
+_HP_CELL_ADDR = f"{{{_HP_NS}}}cellAddr"
+_HP_CELL_SPAN = f"{{{_HP_NS}}}cellSpan"
+_HP_SUBLIST = f"{{{_HP_NS}}}subList"
+_HP_P = f"{{{_HP_NS}}}p"
 
 
 class HwpxAdapter(DocumentAdapter):
@@ -60,7 +76,6 @@ class HwpxAdapter(DocumentAdapter):
             current_idx = idx_counter[0]
             idx_counter[0] += 1
             yield current_idx, tbl, parent_path
-            # 중첩 테이블: 각 앵커 셀의 tables만 내려간다 (같은 물리 셀 중복 방지)
             seen_cell_ids: set[int] = set()
             for entry in tbl.iter_grid():
                 if not entry.is_anchor:
@@ -86,24 +101,75 @@ class HwpxAdapter(DocumentAdapter):
         for idx, tbl, _ in self._iter_tables():
             if idx == table_index:
                 return tbl
-        raise IndexError(f"HWPX table index {table_index} not found")
+        raise TableIndexError(f"HWPX table index {table_index} not found")
+
+    def _find_grid_entry(self, tbl, row: int, col: int):
+        """(row, col)의 HwpxTableGridPosition 반환. 경계/존재 검증 포함."""
+        if row < 0 or col < 0 or row >= tbl.row_count or col >= tbl.column_count:
+            raise CellOutOfBoundsError(
+                f"cell ({row},{col}) out of bounds "
+                f"({tbl.row_count}x{tbl.column_count})"
+            )
+        for entry in tbl.iter_grid():
+            if (entry.row, entry.column) == (row, col):
+                return entry
+        raise CellOutOfBoundsError(
+            f"cell ({row},{col}) does not resolve to any physical cell"
+        )
+
+    def _resolve_anchor_cell(
+        self, tbl, row: int, col: int, *, allow_merge_redirect: bool
+    ):
+        """(row,col)에 대응하는 앵커 HwpxOxmlTableCell 반환.
+
+        non-anchor 좌표이고 allow_merge_redirect가 False면 MergedCellWriteError.
+        True면 앵커로 리디렉트하고 경고를 남긴다.
+        """
+        entry = self._find_grid_entry(tbl, row, col)
+        if not entry.is_anchor:
+            anchor_r, anchor_c = entry.anchor
+            if not allow_merge_redirect:
+                raise MergedCellWriteError(
+                    f"cell ({row},{col}) is part of a merged region anchored at "
+                    f"({anchor_r},{anchor_c}) span={entry.span}. "
+                    f"Write to the anchor coordinate, or pass "
+                    f"allow_merge_redirect=True."
+                )
+            warnings.warn(
+                f"write to ({row},{col}) redirected to merge anchor "
+                f"({anchor_r},{anchor_c})",
+                stacklevel=3,
+            )
+        return entry
 
     @staticmethod
-    def _cell_text(cell) -> str:
-        """셀의 직접 텍스트만 추출 (중첩 테이블의 텍스트는 제외).
-
-        python-hwpx의 ``paragraph.text``는 ``.//hp:t``로 descendant를 훑어
-        중첩 테이블 내부 텍스트까지 흡수한다. LLM에게 이게 그대로 노출되면
-        외부 셀의 내용이 중첩 테이블 내용과 뒤섞인 것처럼 보인다.
-        따라서 run의 직접 자식 ``<hp:t>``만 읽는다 (중첩된 ``<hp:tbl>`` 서브트리는 자연히 제외).
-        """
+    def _cell_text_raw(cell) -> str:
+        """셀의 직접 텍스트만 추출 (중첩 테이블 제외). strip하지 않은 원문."""
         parts: list[str] = []
         for para in cell.paragraphs:
             for run in para.element.findall(_HP_RUN):
                 for t in run.findall(_HP_T):
                     if t.text:
                         parts.append(t.text)
-        return "".join(parts).strip()
+        return "".join(parts)
+
+    @classmethod
+    def _cell_text(cls, cell) -> str:
+        """프리뷰용: strip된 텍스트."""
+        return cls._cell_text_raw(cell).strip()
+
+    @staticmethod
+    def _cell_paragraph_texts(cell) -> list[str]:
+        """셀의 각 paragraph 텍스트 (중첩 테이블 텍스트 제외)."""
+        out: list[str] = []
+        for para in cell.paragraphs:
+            parts = []
+            for run in para.element.findall(_HP_RUN):
+                for t in run.findall(_HP_T):
+                    if t.text:
+                        parts.append(t.text)
+            out.append("".join(parts))
+        return out
 
     # ---- inspection ----
     def get_placeholders(self) -> list[str]:
@@ -119,7 +185,6 @@ class HwpxAdapter(DocumentAdapter):
                 continue
 
             visible_rows = min(rows, preview_rows)
-            # 기본 프리뷰 grid: None 채운 뒤 앵커 위치에만 텍스트 주입
             preview: list[list[str | None]] = [
                 [None for _ in range(cols)] for _ in range(visible_rows)
             ]
@@ -128,9 +193,6 @@ class HwpxAdapter(DocumentAdapter):
 
             for entry in tbl.iter_grid():
                 if entry.anchor in seen_anchors:
-                    # 같은 앵커는 한 번만
-                    if entry.row < visible_rows and entry.is_anchor:
-                        pass  # preview는 이미 채웠으므로 skip
                     continue
                 if entry.is_anchor:
                     seen_anchors.add(entry.anchor)
@@ -152,13 +214,38 @@ class HwpxAdapter(DocumentAdapter):
             )
         return schemas
 
+    def get_cell(self, table_index: int, row: int, col: int) -> CellContent:
+        """셀 단건 조회. 전체 텍스트 + 병합/중첩 메타 반환."""
+        tbl = self._get_table(table_index)
+        entry = self._find_grid_entry(tbl, row, col)
+
+        anchor_cell = entry.cell
+        text = self._cell_text_raw(anchor_cell)
+        paragraphs = self._cell_paragraph_texts(anchor_cell)
+
+        # 중첩 테이블 flat index 찾기
+        nested_indices: list[int] = []
+        if entry.is_anchor and list(anchor_cell.tables):
+            # _iter_tables로 descendant를 훑어 이 앵커 셀에서 파생된 테이블의 index를 수집
+            nested_cell_ids = {id(t.element) for t in anchor_cell.tables}
+            for child_idx, child_tbl, _ in self._iter_tables():
+                if id(child_tbl.element) in nested_cell_ids:
+                    nested_indices.append(child_idx)
+
+        return CellContent(
+            row=row,
+            col=col,
+            text=text,
+            paragraphs=paragraphs,
+            is_anchor=entry.is_anchor,
+            anchor=entry.anchor,
+            span=entry.span,
+            nested_table_indices=nested_indices,
+        )
+
     # ---- editing ----
     def render_template(self, context: dict[str, Any]) -> None:
-        """본문 + 표 셀의 {{key}}를 paragraph 단위로 치환.
-
-        병합 셀의 경우 같은 앵커의 paragraph를 여러 logical 좌표에서 참조하게 되므로,
-        is_anchor 위치만 방문해 중복 치환을 피한다.
-        """
+        """본문 + 표 셀의 {{key}}를 paragraph 단위로 치환."""
 
         def substitute(para) -> None:
             text = para.text
@@ -167,17 +254,23 @@ class HwpxAdapter(DocumentAdapter):
                     lambda m: str(context.get(m.group(1), m.group(0))), text
                 )
 
-        # 본문
         for section in self._doc.sections:
             for para in section.paragraphs:
                 substitute(para)
-        # 표 셀 (중첩 테이블 포함; _iter_tables가 DFS)
         for _, tbl, _ in self._iter_tables():
             for entry in tbl.iter_grid():
                 if not entry.is_anchor:
                     continue
                 for para in entry.cell.paragraphs:
                     substitute(para)
+
+    def _write_cell(self, cell, value: str) -> None:
+        """셀 첫 paragraph에 value를 쓰고 나머지는 비운다 (기존 run 스타일 보존)."""
+        paragraphs = list(cell.paragraphs)
+        if paragraphs:
+            paragraphs[0].text = value
+            for p in paragraphs[1:]:
+                p.text = ""
 
     def set_cell(
         self,
@@ -190,57 +283,107 @@ class HwpxAdapter(DocumentAdapter):
     ) -> str:
         """셀 값 교체. 원래 값 반환.
 
-        병합 셀(non-anchor) 좌표로 호출하면 기본적으로 ``ValueError``를 발생시킨다.
-        이는 LLM이 병합 구조를 잘못 이해하고 엉뚱한 앵커를 덮어쓰는 것을 방지한다.
-        ``allow_merge_redirect=True``를 주면 앵커로 자동 리디렉트하고 경고만 남긴다.
-
-        set_cell_text 버그 우회: paragraph.text 직접 할당.
+        병합 셀(non-anchor) 좌표는 기본적으로 ``MergedCellWriteError``.
+        ``allow_merge_redirect=True``면 앵커로 리디렉트 + 경고.
         """
         tbl = self._get_table(table_index)
-        if row < 0 or col < 0 or row >= tbl.row_count or col >= tbl.column_count:
-            raise IndexError(
-                f"cell ({row},{col}) out of bounds for table {table_index} "
-                f"({tbl.row_count}x{tbl.column_count})"
-            )
-
-        grid_entry = None
-        for entry in tbl.iter_grid():
-            if (entry.row, entry.column) == (row, col):
-                grid_entry = entry
-                break
-        if grid_entry is None:
-            raise IndexError(
-                f"cell ({row},{col}) does not resolve to any physical cell"
-            )
-
-        if not grid_entry.is_anchor:
-            anchor_r, anchor_c = grid_entry.anchor
-            if not allow_merge_redirect:
-                raise ValueError(
-                    f"cell ({row},{col}) is part of a merged region anchored at "
-                    f"({anchor_r},{anchor_c}) span={grid_entry.span}. "
-                    f"Write to the anchor coordinate, or pass "
-                    f"allow_merge_redirect=True."
-                )
-            warnings.warn(
-                f"set_cell({row},{col}) redirected to merge anchor "
-                f"({anchor_r},{anchor_c})",
-                stacklevel=2,
-            )
-
-        cell = grid_entry.cell
-        paragraphs = list(cell.paragraphs)
+        entry = self._resolve_anchor_cell(
+            tbl, row, col, allow_merge_redirect=allow_merge_redirect
+        )
+        cell = entry.cell
         old = self._cell_text(cell)
-        if paragraphs:
-            paragraphs[0].text = value
-            for p in paragraphs[1:]:
-                p.text = ""
+        self._write_cell(cell, value)
+        return old
+
+    def append_to_cell(
+        self,
+        table_index: int,
+        row: int,
+        col: int,
+        value: str,
+        separator: str = "  ",
+        *,
+        allow_merge_redirect: bool = False,
+    ) -> str:
+        """기존 텍스트 뒤에 ``separator + value``를 덧붙임. 원래 값 반환.
+
+        라벨(예: ``"성  명"``)을 유지한 채 값을 추가하는 용도.
+        빈 셀이면 separator 없이 value만 기록.
+        """
+        tbl = self._get_table(table_index)
+        entry = self._resolve_anchor_cell(
+            tbl, row, col, allow_merge_redirect=allow_merge_redirect
+        )
+        cell = entry.cell
+        old = self._cell_text(cell)
+        new_value = f"{old}{separator}{value}" if old else value
+        self._write_cell(cell, new_value)
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
-        """python-hwpx에는 표준 add_row API가 없음.
-        대안: 템플릿에 충분한 빈 행을 미리 만들고 set_cell로 채우는 전략."""
-        raise NotImplementedError(
-            "HWPX는 python-hwpx에 동적 행 추가 공식 API가 없음. "
-            "템플릿에 여분 행을 두고 set_cell로 채우는 방식을 권장."
-        )
+        """표 끝에 새 행 추가 (last row 구조를 복제).
+
+        python-hwpx에 공식 add_row API는 없지만, 마지막 ``<hp:tr>``을 deepcopy
+        한 뒤 각 셀의 텍스트를 비우고 ``cellAddr.rowAddr``를 새 인덱스로 갱신
+        하는 방식으로 구현한다. 제약:
+
+        - 마지막 행이 위 행의 rowSpan에 포함된 경우(교차 병합)는 지원하지 않음
+        - 각 셀의 서식/폭은 마지막 행의 것을 그대로 상속
+        """
+        tbl = self._get_table(table_index)
+        tbl_elem = tbl.element
+
+        rows = tbl_elem.findall(_HP_TR)
+        if not rows:
+            raise NotImplementedForFormat("cannot append row to empty HWPX table")
+
+        last_row = rows[-1]
+        # 마지막 행에 위에서 내려오는 rowSpan 흔적이 있으면 복제 위험 → 거부
+        for tc in last_row.findall(_HP_TC):
+            span = tc.find(_HP_CELL_SPAN)
+            addr = tc.find(_HP_CELL_ADDR)
+            if span is not None and addr is not None:
+                try:
+                    row_span = int(span.get("rowSpan", "1"))
+                    row_addr = int(addr.get("rowAddr", "0"))
+                except (TypeError, ValueError):
+                    continue
+                if row_addr + row_span - 1 != tbl.row_count - 1:
+                    raise NotImplementedForFormat(
+                        "last row participates in a cross-row merge; "
+                        "append_row is not safe for this table."
+                    )
+
+        new_row_idx = tbl.row_count
+        new_row = deepcopy(last_row)
+        for tc in new_row.findall(_HP_TC):
+            addr = tc.find(_HP_CELL_ADDR)
+            if addr is not None:
+                addr.set("rowAddr", str(new_row_idx))
+            # 기존 셀 텍스트 비우기: <hp:subList>/<hp:p>/<hp:run>/<hp:t> 모두 유지하고 text만 clear
+            sublist = tc.find(_HP_SUBLIST)
+            if sublist is not None:
+                for p in sublist.findall(_HP_P):
+                    for run in p.findall(_HP_RUN):
+                        for t in run.findall(_HP_T):
+                            t.text = ""
+
+        tbl_elem.append(new_row)
+
+        # rowCnt 속성 갱신 (있을 때만)
+        row_cnt_attr = tbl_elem.get("rowCnt")
+        if row_cnt_attr and row_cnt_attr.isdigit():
+            tbl_elem.set("rowCnt", str(int(row_cnt_attr) + 1))
+
+        # section dirty 처리
+        tbl.mark_dirty()
+
+        # 값 채우기 (병합된 non-anchor 위치는 스킵)
+        for i, value in enumerate(values):
+            if i >= tbl.column_count:
+                break
+            try:
+                self.set_cell(table_index, new_row_idx, i, value)
+            except MergedCellWriteError:
+                # 복제 시 상속된 병합이 있으면 non-anchor 좌표는 스킵
+                continue

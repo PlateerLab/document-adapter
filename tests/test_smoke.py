@@ -630,6 +630,331 @@ def test_hwpx_set_cell_on_nested_table(tmp_path: Path) -> None:
     assert t.preview[0] == ["after", "keep"]
 
 
+# ---- v0.3.0: get_cell / append_to_cell / DOCX+PPTX merge awareness ----
+
+
+def test_hwpx_get_cell_returns_full_text(tmp_path: Path) -> None:
+    src = tmp_path / "big_cell.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(1, 1)
+    doc.save_to_path(src)
+
+    long_text = "이 셀은 50자를 훨씬 넘기는 내용을 담고 있어서 preview에서 잘리게 된다. " * 3
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        tbl.cell(0, 0).text = long_text
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        preview = adapter.get_tables()[0].preview[0][0]
+        cell = adapter.get_cell(0, 0, 0)
+    finally:
+        adapter.close()
+
+    assert len(preview) <= 40  # truncated
+    assert cell.text == long_text  # full
+    assert cell.is_anchor is True
+    assert cell.anchor == (0, 0)
+    assert cell.span == (1, 1)
+
+
+def test_hwpx_get_cell_reports_merge_info(tmp_path: Path) -> None:
+    src = tmp_path / "merged_lookup.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(2, 3)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        tbl.rows[0].cells[0].set_span(1, 3)
+        tbl.rows[0].cells[0].text = "HEADER"
+        for s in (tbl.rows[0].cells[1], tbl.rows[0].cells[2]):
+            s.set_size(0, 0); s.text = ""
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        anchor_info = adapter.get_cell(0, 0, 0)
+        non_anchor_info = adapter.get_cell(0, 0, 2)
+    finally:
+        adapter.close()
+
+    assert anchor_info.is_anchor is True
+    assert anchor_info.span == (1, 3)
+    assert anchor_info.text == "HEADER"
+    assert non_anchor_info.is_anchor is False
+    assert non_anchor_info.anchor == (0, 0)
+    assert non_anchor_info.span == (1, 3)
+    assert non_anchor_info.text == "HEADER"  # anchor의 텍스트 반환
+
+
+def test_hwpx_append_to_cell_preserves_label(tmp_path: Path) -> None:
+    src = tmp_path / "label_cell.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(1, 1)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        tbl.cell(0, 0).text = "성  명"
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        old = adapter.append_to_cell(0, 0, 0, "홍길동", separator="   ")
+        adapter.save()
+    finally:
+        adapter.close()
+
+    assert old == "성  명"
+    verify = load(src)
+    try:
+        cell = verify.get_cell(0, 0, 0)
+    finally:
+        verify.close()
+    assert cell.text == "성  명   홍길동"
+
+
+def test_hwpx_append_to_cell_empty_skips_separator(tmp_path: Path) -> None:
+    src = tmp_path / "empty.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(1, 1)
+    doc.save_to_path(src)
+
+    adapter = load(src)
+    try:
+        old = adapter.append_to_cell(0, 0, 0, "first")
+        adapter.save()
+    finally:
+        adapter.close()
+    assert old == ""
+
+    verify = load(src)
+    try:
+        cell = verify.get_cell(0, 0, 0)
+    finally:
+        verify.close()
+    assert cell.text == "first"
+
+
+def test_hwpx_append_row_copies_style(tmp_path: Path) -> None:
+    src = tmp_path / "appendable.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(2, 3)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        tbl.cell(0, 0).text = "H1"
+        tbl.cell(0, 1).text = "H2"
+        tbl.cell(0, 2).text = "H3"
+        tbl.cell(1, 0).text = "r1c0"
+        tbl.cell(1, 1).text = "r1c1"
+        tbl.cell(1, 2).text = "r1c2"
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        adapter.append_row(0, ["r2c0", "r2c1", "r2c2"])
+        adapter.save()
+    finally:
+        adapter.close()
+
+    verify = load(src)
+    try:
+        t = verify.get_tables()[0]
+    finally:
+        verify.close()
+    assert t.rows == 3
+    assert t.preview[2] == ["r2c0", "r2c1", "r2c2"]
+
+
+def test_hwpx_errors_are_custom_subclasses() -> None:
+    from document_adapter.base import (
+        MergedCellWriteError,
+        CellOutOfBoundsError,
+        TableIndexError,
+    )
+
+    assert issubclass(MergedCellWriteError, ValueError)
+    assert issubclass(CellOutOfBoundsError, IndexError)
+    assert issubclass(TableIndexError, IndexError)
+
+
+def _make_docx_merged_table(path: Path) -> None:
+    """2x3 DOCX에서 (0,0)~(0,2) 수평 병합."""
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    # python-docx merge API: cell.merge(other_cell)
+    a = table.cell(0, 0)
+    a.merge(table.cell(0, 1))
+    a.merge(table.cell(0, 2))
+    a.text = "HEADER"
+    table.cell(1, 0).text = "A"
+    table.cell(1, 1).text = "B"
+    table.cell(1, 2).text = "C"
+    doc.save(path)
+
+
+def test_docx_get_tables_reports_merges(tmp_path: Path) -> None:
+    src = tmp_path / "merged.docx"
+    _make_docx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        tables = adapter.get_tables()
+    finally:
+        adapter.close()
+
+    t = tables[0]
+    assert t.rows == 2 and t.cols == 3
+    assert t.preview[0][0] == "HEADER"
+    assert t.preview[0][1] is None
+    assert t.preview[0][2] is None
+    assert t.preview[1] == ["A", "B", "C"]
+    assert len(t.merges) == 1
+    assert t.merges[0].anchor == (0, 0)
+    assert t.merges[0].span == (1, 3)
+
+
+def test_docx_set_cell_rejects_merged_slot(tmp_path: Path) -> None:
+    src = tmp_path / "reject.docx"
+    _make_docx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        with pytest.raises(ValueError, match="merged region"):
+            adapter.set_cell(0, 0, 2, "X")
+        # anchor는 성공
+        old = adapter.set_cell(0, 0, 0, "NEW HEADER")
+        adapter.save()
+    finally:
+        adapter.close()
+    assert old == "HEADER"
+
+    verify = load(src)
+    try:
+        t = verify.get_tables()[0]
+    finally:
+        verify.close()
+    assert t.preview[0][0] == "NEW HEADER"
+
+
+def test_docx_append_to_cell(tmp_path: Path) -> None:
+    src = tmp_path / "append_label.docx"
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.cell(0, 0).text = "Name"
+    doc.save(src)
+
+    adapter = load(src)
+    try:
+        old = adapter.append_to_cell(0, 0, 0, "Alice", separator=": ")
+        adapter.save()
+    finally:
+        adapter.close()
+    assert old == "Name"
+
+    verify = Document(src)
+    assert verify.tables[0].cell(0, 0).text == "Name: Alice"
+
+
+def _make_pptx_merged_table(path: Path) -> None:
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_table(2, 3, Inches(1), Inches(1), Inches(6), Inches(1.5))
+    tbl = shape.table
+    # PPTX는 (0,0) → (0,2) 병합
+    tbl.cell(0, 0).merge(tbl.cell(0, 2))
+    tbl.cell(0, 0).text = "TITLE"
+    tbl.cell(1, 0).text = "A"
+    tbl.cell(1, 1).text = "B"
+    tbl.cell(1, 2).text = "C"
+    prs.save(path)
+
+
+def test_pptx_get_tables_reports_merges(tmp_path: Path) -> None:
+    src = tmp_path / "merged.pptx"
+    _make_pptx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        t = adapter.get_tables()[0]
+    finally:
+        adapter.close()
+
+    assert t.preview[0][0] == "TITLE"
+    assert t.preview[0][1] is None
+    assert t.preview[0][2] is None
+    assert t.preview[1] == ["A", "B", "C"]
+    assert len(t.merges) == 1
+    assert t.merges[0].anchor == (0, 0)
+    assert t.merges[0].span == (1, 3)
+
+
+def test_pptx_set_cell_rejects_merged_slot(tmp_path: Path) -> None:
+    src = tmp_path / "pptx_reject.pptx"
+    _make_pptx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        with pytest.raises(ValueError, match="merged region"):
+            adapter.set_cell(0, 0, 2, "X")
+        old = adapter.set_cell(0, 0, 0, "NEW TITLE")
+        adapter.save()
+    finally:
+        adapter.close()
+    assert old == "TITLE"
+
+
+def test_pptx_append_to_cell(tmp_path: Path) -> None:
+    src = tmp_path / "pptx_append.pptx"
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_table(1, 1, Inches(1), Inches(1), Inches(4), Inches(1))
+    shape.table.cell(0, 0).text = "성명"
+    prs.save(src)
+
+    adapter = load(src)
+    try:
+        old = adapter.append_to_cell(0, 0, 0, "Alice", separator=" → ")
+        adapter.save()
+    finally:
+        adapter.close()
+    assert old == "성명"
+
+    verify = Presentation(src)
+    cell = next(
+        sh.table.cell(0, 0)
+        for sl in verify.slides
+        for sh in sl.shapes
+        if sh.has_table
+    )
+    assert cell.text == "성명 → Alice"
+
+
 def test_hwpx_set_cell_preserves_charprid_ref(tmp_path: Path) -> None:
     """HWPX 셀의 run이 가진 charPrIDRef가 set_cell 후에도 유지되는지 확인.
 
