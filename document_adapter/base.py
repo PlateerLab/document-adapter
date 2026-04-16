@@ -14,13 +14,30 @@ from typing import Any
 
 
 @dataclass
+class MergeInfo:
+    """병합 셀 정보. anchor=(row,col)에서 span=(rows,cols)만큼 병합."""
+    anchor: tuple[int, int]
+    span: tuple[int, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"anchor": list(self.anchor), "span": list(self.span)}
+
+
+@dataclass
 class TableSchema:
-    """표 한 개의 구조 (LLM에게 넘길 형태)."""
+    """표 한 개의 구조 (LLM에게 넘길 형태).
+
+    preview는 logical grid(rows × cols) 형태. 병합된 non-anchor 슬롯은 ``None``.
+    merges는 span>1x1인 앵커 목록 (LLM이 병합 구조를 재구성할 수 있게).
+    parent_path는 중첩 테이블 위치 표시 (예: ``"tables[0].cell(1,2)"``).
+    """
     index: int
     rows: int
     cols: int
-    preview: list[list[str]]
+    preview: list[list[str | None]]
     location: str | None = None
+    merges: list[MergeInfo] = field(default_factory=list)
+    parent_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -28,7 +45,9 @@ class TableSchema:
             "rows": self.rows,
             "cols": self.cols,
             "location": self.location,
+            "parent_path": self.parent_path,
             "preview": self.preview,
+            "merges": [m.to_dict() for m in self.merges],
         }
 
 

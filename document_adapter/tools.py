@@ -69,7 +69,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "set_cell",
         "description": (
             "특정 표의 셀 값을 교체한다. table_index는 inspect_document의 tables 배열 인덱스. "
-            "PPTX는 슬라이드 경계와 무관한 전역 index."
+            "PPTX는 슬라이드 경계와 무관한 전역 index. "
+            "HWPX 병합 셀 주의: inspect_document의 tables[i].merges에 나온 anchor 좌표로만 "
+            "수정 가능. 병합 영역 내부의 non-anchor 좌표로 호출하면 ValueError가 발생하며, "
+            "preview의 해당 슬롯은 null로 표시된다."
         ),
         "input_schema": {
             "type": "object",
@@ -82,6 +85,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "output_path": {
                     "type": "string",
                     "description": "생략 시 원본 덮어쓰기",
+                },
+                "allow_merge_redirect": {
+                    "type": "boolean",
+                    "description": (
+                        "HWPX 전용. true면 병합 영역 non-anchor 좌표 호출 시 "
+                        "앵커로 자동 리디렉트(권장 X, 구조 잘못 이해한 호출을 숨김)."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["path", "table_index", "row", "col", "value"],
@@ -162,14 +173,23 @@ def render_template(path: str, context: dict[str, Any],
 
 
 def set_cell(path: str, table_index: int, row: int, col: int, value: str,
-             output_path: str | None = None) -> dict[str, Any]:
+             output_path: str | None = None,
+             allow_merge_redirect: bool = False) -> dict[str, Any]:
     target = Path(output_path) if output_path else Path(path)
     if output_path and Path(path) != target:
         shutil.copy2(path, target)
 
     doc = load(target)
     try:
-        old = doc.set_cell(table_index, row, col, value)
+        # allow_merge_redirect는 HWPX 어댑터만 지원하므로 키워드 인자로 전달 시도하고
+        # 포맷이 지원 안 하면 무시.
+        try:
+            old = doc.set_cell(
+                table_index, row, col, value,
+                allow_merge_redirect=allow_merge_redirect,
+            )
+        except TypeError:
+            old = doc.set_cell(table_index, row, col, value)
         doc.save()
     finally:
         doc.close()

@@ -324,6 +324,312 @@ def test_docx_empty_cell_preserves_ppr_rpr(tmp_path: Path) -> None:
     assert rfonts.get(f"{{{W_NS}}}ascii") == "Malgun Gothic"
 
 
+# ---- HWPX merged cell / nested table awareness (v0.1.3) ----
+
+
+def _make_hwpx_merged_table(path: Path) -> None:
+    """3x3 표의 첫 행을 colSpan=3으로 병합한 HWPX 문서 생성.
+
+    HWPX에서 병합은 (a) anchor의 cellSpan 변경 + (b) 나머지 셀을
+    width=0, height=0, 빈 텍스트로 "deactivate"하는 방식으로 이뤄진다.
+    """
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(3, 3)
+    doc.save_to_path(path)
+
+    # python-hwpx의 add_table는 일반 3x3을 만든다. 병합은 재오픈 후 처리.
+    doc2 = HwpxDocument.open(path)
+    try:
+        section = doc2.sections[0]
+        tbl = None
+        for para in section.paragraphs:
+            if para.tables:
+                tbl = para.tables[0]
+                break
+        assert tbl is not None, "created table not found"
+
+        row0 = tbl.rows[0].cells
+        anchor = row0[0]
+        anchor.set_span(row_span=1, col_span=3)
+        anchor.text = "병합된 제목"
+        for sibling in (row0[1], row0[2]):
+            sibling.set_size(width=0, height=0)
+            sibling.text = ""
+
+        r1 = tbl.rows[1].cells
+        r1[0].text = "A1"; r1[1].text = "A2"; r1[2].text = "A3"
+        r2 = tbl.rows[2].cells
+        r2[0].text = "B1"; r2[1].text = "B2"; r2[2].text = "B3"
+
+        doc2.save_to_path(path)
+    finally:
+        doc2.close()
+
+
+def test_hwpx_get_tables_reports_merges(tmp_path: Path) -> None:
+    src = tmp_path / "merged.hwpx"
+    _make_hwpx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        tables = adapter.get_tables()
+    finally:
+        adapter.close()
+
+    assert len(tables) == 1
+    t = tables[0]
+    assert t.rows == 3 and t.cols == 3
+    # 첫 행: 앵커에만 텍스트, 나머지는 None
+    assert t.preview[0][0] == "병합된 제목"
+    assert t.preview[0][1] is None
+    assert t.preview[0][2] is None
+    # 일반 행은 그대로
+    assert t.preview[1] == ["A1", "A2", "A3"]
+    assert t.preview[2] == ["B1", "B2", "B3"]
+    # merges 메타
+    assert len(t.merges) == 1
+    assert t.merges[0].anchor == (0, 0)
+    assert t.merges[0].span == (1, 3)
+
+
+def test_hwpx_set_cell_rejects_merged_slot(tmp_path: Path) -> None:
+    src = tmp_path / "merged.hwpx"
+    _make_hwpx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        with pytest.raises(ValueError, match="merged region"):
+            adapter.set_cell(0, 0, 2, "해킹")
+        # 앵커 보존 확인
+        adapter_tables = adapter.get_tables()
+        assert adapter_tables[0].preview[0][0] == "병합된 제목"
+    finally:
+        adapter.close()
+
+
+def test_hwpx_set_cell_anchor_succeeds(tmp_path: Path) -> None:
+    src = tmp_path / "merged.hwpx"
+    _make_hwpx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        old = adapter.set_cell(0, 0, 0, "새 제목")
+        adapter.save()
+    finally:
+        adapter.close()
+
+    assert old == "병합된 제목"
+    verify = load(src)
+    try:
+        tables = verify.get_tables()
+    finally:
+        verify.close()
+    assert tables[0].preview[0][0] == "새 제목"
+    assert tables[0].preview[0][1] is None  # 병합 구조 유지
+
+
+def test_hwpx_set_cell_allow_merge_redirect(tmp_path: Path) -> None:
+    import warnings as _w
+
+    src = tmp_path / "merged.hwpx"
+    _make_hwpx_merged_table(src)
+
+    adapter = load(src)
+    try:
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            old = adapter.set_cell(0, 0, 2, "리디렉트", allow_merge_redirect=True)
+        assert any("redirected" in str(w.message) for w in caught)
+        assert old == "병합된 제목"
+        adapter.save()
+    finally:
+        adapter.close()
+
+    verify = load(src)
+    try:
+        tables = verify.get_tables()
+    finally:
+        verify.close()
+    assert tables[0].preview[0][0] == "리디렉트"
+
+
+def test_hwpx_nested_table_indexed_with_parent_path(tmp_path: Path) -> None:
+    src = tmp_path / "nested.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(2, 2)
+    doc.save_to_path(src)
+
+    # 재오픈해 (0,0) 셀에 중첩 테이블 삽입
+    doc2 = HwpxDocument.open(src)
+    try:
+        section = doc2.sections[0]
+        outer = None
+        for para in section.paragraphs:
+            if para.tables:
+                outer = para.tables[0]
+                break
+        assert outer is not None
+        # anchor cell에 중첩 테이블
+        inner_cell = outer.cell(0, 0)
+        inner = inner_cell.add_table(1, 2)
+        inner.cell(0, 0).text = "중첩A"
+        inner.cell(0, 1).text = "중첩B"
+        # 바깥 셀 다른 위치도 채움
+        outer.cell(0, 1).text = "out01"
+        outer.cell(1, 0).text = "out10"
+        outer.cell(1, 1).text = "out11"
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        tables = adapter.get_tables()
+    finally:
+        adapter.close()
+
+    # flat DFS: 바깥 테이블 idx=0, 중첩 테이블 idx=1
+    assert len(tables) == 2
+    assert tables[0].parent_path is None
+    assert tables[0].rows == 2 and tables[0].cols == 2
+    assert tables[1].parent_path is not None
+    assert "cell(0,0)" in tables[1].parent_path
+    assert tables[1].preview[0] == ["중첩A", "중첩B"]
+
+
+def test_hwpx_2d_merge_and_multiple_merges(tmp_path: Path) -> None:
+    """rowSpan>1 AND colSpan>1, 같은 표에 복수 병합."""
+    src = tmp_path / "complex.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(5, 4)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        # merge 1: (0,0) 1x2 horizontal
+        tbl.rows[0].cells[0].set_span(1, 2); tbl.rows[0].cells[0].text = "M1"
+        tbl.rows[0].cells[1].set_size(0, 0); tbl.rows[0].cells[1].text = ""
+        # merge 2: (2,2) 2x2 block
+        tbl.rows[2].cells[2].set_span(2, 2); tbl.rows[2].cells[2].text = "M2"
+        tbl.rows[2].cells[3].set_size(0, 0); tbl.rows[2].cells[3].text = ""
+        tbl.rows[3].cells[2].set_size(0, 0); tbl.rows[3].cells[2].text = ""
+        tbl.rows[3].cells[3].set_size(0, 0); tbl.rows[3].cells[3].text = ""
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        t = adapter.get_tables()[0]
+    finally:
+        adapter.close()
+
+    assert t.preview[0][0] == "M1" and t.preview[0][1] is None
+    assert t.preview[2][2] == "M2"
+    assert t.preview[2][3] is None
+    assert t.preview[3][2] is None and t.preview[3][3] is None
+    anchors = {m.anchor: m.span for m in t.merges}
+    assert anchors[(0, 0)] == (1, 2)
+    assert anchors[(2, 2)] == (2, 2)
+
+
+def test_hwpx_merge_beyond_preview_cutoff(tmp_path: Path) -> None:
+    """preview_rows로 잘려도 merges 메타에는 모든 병합이 포함돼야 한다."""
+    src = tmp_path / "bigtable.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(10, 3)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        tbl = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        tbl.rows[5].cells[0].set_span(1, 3); tbl.rows[5].cells[0].text = "DEEP"
+        tbl.rows[5].cells[1].set_size(0, 0); tbl.rows[5].cells[1].text = ""
+        tbl.rows[5].cells[2].set_size(0, 0); tbl.rows[5].cells[2].text = ""
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        t = adapter.get_tables(preview_rows=4)[0]
+    finally:
+        adapter.close()
+
+    assert len(t.preview) == 4
+    assert any(m.anchor == (5, 0) and m.span == (1, 3) for m in t.merges)
+
+
+def test_hwpx_nested_cell_text_isolated(tmp_path: Path) -> None:
+    """외부 셀 프리뷰에 중첩 테이블 텍스트가 섞여 들어오면 안 된다."""
+    src = tmp_path / "nested_isolation.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(2, 2)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        outer = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        inner = outer.cell(0, 0).add_table(1, 1)
+        inner.cell(0, 0).text = "INNER_ONLY"
+        outer.cell(1, 1).text = "outer"
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        tables = adapter.get_tables()
+    finally:
+        adapter.close()
+
+    # 외부 (0,0)은 중첩 테이블을 담고 있지만 직접 텍스트는 없어야 한다
+    assert tables[0].preview[0][0] == ""
+    # 내부 테이블만 INNER_ONLY를 담는다
+    assert tables[1].preview[0][0] == "INNER_ONLY"
+
+
+def test_hwpx_set_cell_on_nested_table(tmp_path: Path) -> None:
+    """flat index로 중첩 테이블 셀도 편집 가능해야 한다."""
+    src = tmp_path / "nested_edit.hwpx"
+    doc = HwpxDocument.new()
+    doc.add_paragraph("")
+    doc.add_table(2, 2)
+    doc.save_to_path(src)
+
+    doc2 = HwpxDocument.open(src)
+    try:
+        outer = next(t for p in doc2.sections[0].paragraphs for t in p.tables)
+        inner = outer.cell(0, 0).add_table(1, 2)
+        inner.cell(0, 0).text = "before"
+        inner.cell(0, 1).text = "keep"
+        doc2.save_to_path(src)
+    finally:
+        doc2.close()
+
+    adapter = load(src)
+    try:
+        old = adapter.set_cell(1, 0, 0, "after")  # nested idx=1
+        adapter.save()
+    finally:
+        adapter.close()
+
+    assert old == "before"
+
+    verify = load(src)
+    try:
+        t = verify.get_tables()[1]
+    finally:
+        verify.close()
+    assert t.preview[0] == ["after", "keep"]
+
+
 def test_hwpx_set_cell_preserves_charprid_ref(tmp_path: Path) -> None:
     """HWPX 셀의 run이 가진 charPrIDRef가 set_cell 후에도 유지되는지 확인.
 
