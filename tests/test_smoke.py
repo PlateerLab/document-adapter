@@ -93,16 +93,50 @@ def test_tool_render(tmp_path: Path) -> None:
     assert Path(result["output_path"]).exists()
 
 
-def test_tool_append_row_not_implemented_pptx(tmp_path: Path) -> None:
+def _make_pptx_with_simple_table(path: Path) -> None:
+    """2x2 표가 있는 최소 PPTX. append_row 테스트용."""
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(6), Inches(1.5))
+    tbl = shape.table
+    tbl.cell(0, 0).text = "H1"
+    tbl.cell(0, 1).text = "H2"
+    tbl.cell(1, 0).text = "A"
+    tbl.cell(1, 1).text = "B"
+    prs.save(path)
+
+
+def test_tool_append_row_pptx_supported(tmp_path: Path) -> None:
+    """PPTX append_row 는 v0.5.0 부터 자체 lxml 구현으로 지원된다.
+
+    마지막 <a:tr> 을 deepcopy 해 새 행을 만들고 셀 텍스트만 비운 뒤 values 로 채운다.
+    """
     src = tmp_path / "template.pptx"
-    _make_pptx(src)
+    _make_pptx_with_simple_table(src)
 
     result = call_tool("append_row", {
         "path": str(src),
         "table_index": 0,
-        "values": ["x"],
+        "values": ["new_col1", "new_col2"],
     })
-    assert result["error"] == "not_implemented"
+    assert "error" not in result or result.get("error") is None, result
+
+    # 저장 후 재열기 해서 행이 +1 되고 값이 들어갔는지 검증
+    output = Path(result.get("output_path", str(src)))
+    after = Presentation(str(output))
+    for shape in after.slides[0].shapes:
+        if shape.has_table:
+            tbl = shape.table
+            assert len(tbl.rows) == 3  # 2 → 3
+            new_row = tbl.rows[2]
+            cells = list(new_row.cells)
+            assert cells[0].text == "new_col1"
+            assert cells[1].text == "new_col2"
+            break
+    else:
+        raise AssertionError("output 에 표가 없음")
 
 
 # ---- regression: set_cell must keep run-level font formatting (issue #1) ----

@@ -356,6 +356,57 @@ def run_scenarios(fixture_path: Path) -> FixtureReport:
         scen("E5", "same cell 2회 set_cell (last-write-wins)", False,
              f"{type(e).__name__}: {e}")
 
+    # ---------- E6: append_row ----------
+    dst = WORK / f"e6_{fixture_path.name}"
+    try:
+        a = load(fixture_path)
+        try:
+            tables = a.get_tables(preview_rows=1000)
+            # 마지막 행에 병합 앵커가 걸쳐 있지 않은 표 찾기
+            target_idx = None
+            rows_before = None
+            cols_before = None
+            for t in tables:
+                last_row = t.rows - 1
+                has_cross_merge = any(
+                    m.anchor[0] + m.span[0] - 1 == last_row and m.span[0] > 1
+                    for m in t.merges
+                )
+                if not has_cross_merge and t.rows >= 1 and t.cols >= 1:
+                    target_idx = t.index
+                    rows_before = t.rows
+                    cols_before = t.cols
+                    break
+            if target_idx is None:
+                scen("E6", "append_row", True,
+                     "(해당 fixture는 모든 표가 마지막 행 병합 — skip)")
+            else:
+                values = [f"__E6_C{i}__" for i in range(min(cols_before, 4))]
+                a.append_row(target_idx, values)
+                a.save(dst)
+        finally:
+            a.close()
+
+        if target_idx is not None:
+            a2 = load(dst)
+            try:
+                tables_after = a2.get_tables(preview_rows=10000)
+                t_after = next((t for t in tables_after if t.index == target_idx), None)
+                if t_after is None:
+                    scen("E6", "append_row", False,
+                         f"T{target_idx} not found after save")
+                else:
+                    ok_rows = t_after.rows == rows_before + 1
+                    # 새 행에 첫 값 들어갔는지
+                    new_cell = a2.get_cell(target_idx, rows_before, 0)
+                    ok_value = "__E6_C0__" in new_cell.text
+                    scen("E6", "append_row", ok_rows and ok_value,
+                         f"rows {rows_before}→{t_after.rows}, new[0]={new_cell.text.strip()!r}")
+            finally:
+                a2.close()
+    except Exception as e:
+        scen("E6", "append_row", False, f"{type(e).__name__}: {e}")
+
     # ---------- X1: merged non-anchor rejection ----------
     try:
         a = load(fixture_path)

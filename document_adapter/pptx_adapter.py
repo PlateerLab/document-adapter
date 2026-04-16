@@ -282,12 +282,63 @@ class PptxAdapter(DocumentAdapter):
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
-        """python-pptx는 표 행 추가 API를 제공하지 않는다.
-        LLM에게는 '지원 안 함'으로 알리는 게 정직한 방식."""
-        raise NotImplementedForFormat(
-            "PPTX는 python-pptx에 동적 행 추가 API가 없음. "
-            "템플릿 단계에서 충분한 빈 행을 만들어 두고 set_cell로 채우는 방식을 권장."
-        )
+        """표 끝에 새 행 추가 — 마지막 <a:tr> 을 deepcopy 후 텍스트만 비움.
+
+        python-pptx 공식 add_row 는 없지만 OOXML 스키마상 <a:tr> 을 붙이는 것만으로
+        행이 추가된다. 마지막 행의 셀 구조 (gridSpan/rowSpan/hMerge/vMerge, tcPr
+        스타일) 를 그대로 상속해 이전 행과 동일한 서식의 빈 행이 생긴다.
+
+        제약:
+          - 마지막 행이 위 행의 rowSpan 영역에 속하면 (vMerge="1" 또는 rowSpan>1 셀
+            존재) 복제 시 교차 병합이 오동작하므로 ``NotImplementedForFormat``.
+        """
+        table = self._get_table(table_index)
+        tbl_elem = table._tbl  # lxml <a:tbl>
+
+        a = f"{{{_A_NS}}}"
+        trs = tbl_elem.findall(f"{a}tr")
+        if not trs:
+            raise NotImplementedForFormat("cannot append row to empty PPTX table")
+
+        last_row = trs[-1]
+        for tc in last_row.findall(f"{a}tc"):
+            if tc.get("vMerge") == "1":
+                raise NotImplementedForFormat(
+                    "last row participates in a cross-row merge (vMerge); "
+                    "append_row is not safe for this table."
+                )
+            try:
+                rs = int(tc.get("rowSpan", "1"))
+            except (TypeError, ValueError):
+                rs = 1
+            if rs > 1:
+                raise NotImplementedForFormat(
+                    "last row contains a rowSpan anchor that extends past the table; "
+                    "append_row is not safe for this table."
+                )
+
+        new_row = deepcopy(last_row)
+        # 기존 run/paragraph 구조는 유지하고 <a:t>.text 만 비움 (스타일 보존)
+        for tc in new_row.findall(f"{a}tc"):
+            txBody = tc.find(f"{a}txBody")
+            if txBody is None:
+                continue
+            for p in txBody.findall(f"{a}p"):
+                for r_el in p.findall(f"{a}r"):
+                    for t_el in r_el.findall(f"{a}t"):
+                        t_el.text = ""
+        tbl_elem.append(new_row)
+
+        new_row_idx = len(trs)  # 새 행 인덱스 (append 전 길이 = 새 행 position)
+        n_cols = len(list(table.columns))
+        for i, value in enumerate(values):
+            if i >= n_cols:
+                break
+            try:
+                self.set_cell(table_index, new_row_idx, i, value)
+            except MergedCellWriteError:
+                # 복제로 상속된 병합의 non-anchor 좌표는 자연히 스킵
+                continue
 
 
 def _set_text_frame_preserving_format(text_frame, value: str) -> None:
