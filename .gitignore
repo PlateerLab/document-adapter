@@ -32,7 +32,9 @@ existing_*_copy.hwpx
 # Real-world HWPX fixtures (개인/회사 문서 — 절대 커밋 금지)
 tests/fixtures/hwpx/real/
 tests/fixtures/pptx/real/
+tests/fixtures/docx/real/
 scripts/_poc_out/
 scripts/hwpx_regression_baseline.json
 scripts/pptx_regression_baseline.json
+scripts/docx_regression_baseline.json
 .venv-poc/

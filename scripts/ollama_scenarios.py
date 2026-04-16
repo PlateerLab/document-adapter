@@ -72,6 +72,15 @@ SCENARIOS = [
             "두 섹션에 같은 라벨이 있으니 구분이 필요해."
         ),
     },
+    {
+        "name": "D. DOCX 양식 — fill_form 기본",
+        "fixture": "tests/fixtures/docx/real/employee_form.docx",
+        "instruction": (
+            "이 직원 정보 양식을 다음 정보로 채워줘: "
+            "성명=홍길동, 부서=개발팀, 직급=책임, 입사일=2026-04-17, "
+            "전화번호=010-1234-5678, 이메일=hong@example.com, 주소=서울시 강남구"
+        ),
+    },
 ]
 
 
