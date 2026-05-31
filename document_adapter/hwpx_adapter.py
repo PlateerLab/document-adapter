@@ -26,7 +26,6 @@ from document_adapter.hwpx_core import (
     HP_TR,
     HwpxPackage,
     cell_paragraph_texts,
-    cell_paragraphs,
     cell_text,
     iter_grid,
     nested_tables,

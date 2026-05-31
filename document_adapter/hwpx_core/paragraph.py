@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from lxml import etree
 
-from document_adapter.hwpx_core.constants import HP_P, HP_RUN, HP_SUBLIST, HP_T, HP_TC
+from document_adapter.hwpx_core.constants import HP_P, HP_RUN, HP_SUBLIST, HP_T
 
 
 def paragraph_text(p_elem: etree._Element) -> str:

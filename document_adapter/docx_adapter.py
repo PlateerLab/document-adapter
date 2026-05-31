@@ -99,11 +99,11 @@ class DocxAdapter(DocumentAdapter):
     format = "docx"
 
     def _open(self) -> None:
-        self._doc = Document(self.path)
+        self._doc = Document(str(self.path))
 
     def save(self, path: Path | str | None = None) -> Path:
         target = Path(path) if path else self.path
-        self._doc.save(target)
+        self._doc.save(str(target))
         self.path = target
         return target
 
@@ -299,7 +299,7 @@ class DocxAdapter(DocumentAdapter):
         tpl = DocxTemplate(self.path)
         tpl.render(context)
         tpl.save(self.path)
-        self._doc = Document(self.path)
+        self._doc = Document(str(self.path))
 
     def set_cell(
         self,

@@ -52,11 +52,11 @@ class PptxAdapter(DocumentAdapter):
     format = "pptx"
 
     def _open(self) -> None:
-        self._prs = Presentation(self.path)
+        self._prs = Presentation(str(self.path))
 
     def save(self, path: Path | str | None = None) -> Path:
         target = Path(path) if path else self.path
-        self._prs.save(target)
+        self._prs.save(str(target))
         self.path = target
         return target
 
