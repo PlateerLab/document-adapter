@@ -327,6 +327,54 @@ def test_form_controls_unsupported_format(tmp_path: Path) -> None:
     ad.close()
 
 
+def _make_docx_irregular_merge(path: Path) -> None:
+    """위 행에 정렬된 tc 가 없는 vMerge=continue 를 가진 docx 표를 만든다.
+
+    이 패턴은 python-docx 의 ``row.cells`` 를 ValueError 로 깨뜨린다
+    (tc_at_grid_offset). document-adapter 가 OOXML 레이어에서 그리드를
+    직접 계산해 견뎌야 한다.
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    t = doc.add_table(rows=2, cols=4)
+    tr0 = t.rows[0]._tr
+    tcs0 = tr0.findall(qn("w:tc"))
+    p0 = tcs0[0].get_or_add_tcPr()
+    p0.append(p0.makeelement(qn("w:gridSpan"), {qn("w:val"): "4"}))
+    p0.append(p0.makeelement(qn("w:vMerge"), {qn("w:val"): "restart"}))
+    for tc in tcs0[1:]:
+        tr0.remove(tc)
+    tr1 = t.rows[1]._tr
+    tcs1 = tr1.findall(qn("w:tc"))
+    pa = tcs1[0].get_or_add_tcPr()
+    pa.append(pa.makeelement(qn("w:gridSpan"), {qn("w:val"): "2"}))
+    pb = tcs1[1].get_or_add_tcPr()
+    pb.append(pb.makeelement(qn("w:gridSpan"), {qn("w:val"): "2"}))
+    pb.append(pb.makeelement(qn("w:vMerge"), {qn("w:val"): "continue"}))
+    for tc in tcs1[2:]:
+        tr1.remove(tc)
+    doc.save(str(path))
+
+
+def test_docx_irregular_horizontal_merge_loads(tmp_path: Path) -> None:
+    """가로(gridSpan)+세로(vMerge) 병합이 섞인 docx 표가 깨지지 않고 로딩돼야 한다.
+
+    회귀: python-docx 의 row.cells 가 ValueError 로 깨지던 실제 docx 폼
+    (docxtpl horizontal_merge_tpl)에서 발견.
+    """
+    src = tmp_path / "m.docx"
+    _make_docx_irregular_merge(src)
+    ad = load(src)
+    tbls = ad.get_tables()        # 수정 전에는 여기서 ValueError 로 크래시
+    ad_cols = tbls[0].cols
+    cell = ad.get_cell(0, 0, 0)   # 셀 접근도 크래시 없이 가능해야
+    ad.close()
+    assert tbls and ad_cols == 4
+    assert cell.span[1] == 4      # gridSpan=4 → colspan 4 (가로병합 인식)
+
+
 def test_overflow_risk_helper() -> None:
     """폭 추정 기반 오버플로 위험 판정: 좁은 칸=위험, 넓은 칸=안전, 미상=보류."""
     from document_adapter.base import _overflow_risk

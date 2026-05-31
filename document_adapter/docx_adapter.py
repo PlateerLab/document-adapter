@@ -47,51 +47,61 @@ def _emu_to_cm(emu: Any) -> float | None:
 
 
 def _build_grid(table) -> tuple[dict[tuple[int, int], dict], int, int]:
-    """(row,col) → {anchor, span, is_anchor, tc, cell} 매핑.
+    """(row,col) → {anchor, span, is_anchor, cell} 매핑.
 
-    python-docx는 병합된 셀에 대해 동일 ``_tc``를 여러 logical 위치에서 반환.
-    이 특성을 이용해 anchor/span을 역산한다.
+    python-docx 의 ``row.cells`` 는 가로(gridSpan)+세로(vMerge) 병합이 섞인 표에서
+    내부적으로 깨진다(``tc_at_grid_offset`` ValueError). 그래서 OOXML 레이어
+    (tblGrid/tr/tc + gridSpan + vMerge)에서 그리드를 직접 계산한다 — hwpx_core
+    의 grid 처리와 동일한 접근. 각 행의 tc gridSpan 합이 곧 전체 열 수다.
     """
-    n_rows = len(table.rows)
-    if n_rows == 0:
-        return {}, 0, 0
-    # logical column 수: 각 행의 cells 길이 중 최대값
-    n_cols = max((len(row.cells) for row in table.rows), default=0)
+    from docx.oxml.ns import qn
+    from docx.table import _Cell
 
-    tc_to_positions: dict[int, tuple[Any, list[tuple[int, int]]]] = {}
-    for r, row in enumerate(table.rows):
-        row_cells = row.cells
-        for c in range(n_cols):
-            if c >= len(row_cells):
-                continue
-            cell = row_cells[c]
-            key = id(cell._tc)
-            if key not in tc_to_positions:
-                tc_to_positions[key] = (cell, [])
-            tc_to_positions[key][1].append((r, c))
+    tbl = table._tbl
+    grid_el = tbl.tblGrid
+    n_cols = len(grid_el.gridCol_lst) if grid_el is not None else 0
+    trs = tbl.tr_lst
+    n_rows = len(trs)
+    if n_rows == 0 or n_cols == 0:
+        return {}, n_rows, n_cols
+
+    # (r,c) → (anchor_info, is_anchor). anchor_info 는 병합 셀들이 공유하는
+    # dict 로, rowspan 이 자라면 span 을 in-place 로 갱신한다.
+    cells_info: dict[tuple[int, int], tuple[dict, bool]] = {}
+    vmerge_active: dict[int, dict] = {}   # 시작열 → 진행 중인 세로병합 anchor_info
+
+    for r, tr in enumerate(trs):
+        col = 0
+        for tc in tr.tc_lst:
+            gs = tc.grid_span or 1
+            tc_pr = tc.tcPr
+            vmerge = tc_pr.find(qn("w:vMerge")) if tc_pr is not None else None
+            vval = vmerge.get(qn("w:val")) if vmerge is not None else None
+            is_continue = vmerge is not None and vval != "restart"
+
+            if is_continue and col in vmerge_active:
+                ai = vmerge_active[col]
+                ai["span"] = (r - ai["anchor"][0] + 1, ai["span"][1])
+                for cc in range(col, col + gs):
+                    cells_info[(r, cc)] = (ai, False)
+            else:
+                ai = {"anchor": (r, col), "span": (1, gs), "cell": _Cell(tc, table)}
+                for cc in range(col, col + gs):
+                    cells_info[(r, cc)] = (ai, cc == col)
+                if vval == "restart":
+                    vmerge_active[col] = ai
+                else:
+                    vmerge_active.pop(col, None)
+            col += gs
 
     grid: dict[tuple[int, int], dict] = {}
-    for cell, positions in tc_to_positions.values():
-        if len(positions) == 1:
-            (r, c) = positions[0]
-            grid[(r, c)] = {
-                "anchor": (r, c),
-                "span": (1, 1),
-                "is_anchor": True,
-                "cell": cell,
-            }
-        else:
-            anchor = min(positions)
-            max_r = max(p[0] for p in positions)
-            max_c = max(p[1] for p in positions)
-            span = (max_r - anchor[0] + 1, max_c - anchor[1] + 1)
-            for pos in positions:
-                grid[pos] = {
-                    "anchor": anchor,
-                    "span": span,
-                    "is_anchor": pos == anchor,
-                    "cell": cell,
-                }
+    for (r, c), (ai, is_anchor) in cells_info.items():
+        grid[(r, c)] = {
+            "anchor": ai["anchor"],
+            "span": ai["span"],
+            "is_anchor": is_anchor,
+            "cell": ai["cell"],
+        }
     return grid, n_rows, n_cols
 
 
