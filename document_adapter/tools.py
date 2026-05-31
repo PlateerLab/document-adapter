@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import load
 
@@ -504,7 +504,7 @@ def fill_form(path: str, data: dict[str, str],
 
 # -------- 이름으로 dispatch --------
 
-TOOL_HANDLERS = {
+TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "inspect_document": inspect_document,
     "render_template": render_template,
     "get_cell": get_cell,

@@ -16,7 +16,6 @@ from typing import Iterator
 
 from lxml import etree
 
-from document_adapter.hwpx_core.constants import HS_SEC
 
 _SECTION_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 
@@ -69,7 +68,16 @@ class HwpxPackage:
         if name not in self._trees:
             if name not in self._raw:
                 raise KeyError(f"part not found: {name}")
-            parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False)
+            # 신뢰할 수 없는 .hwpx 입력 방어: 외부 엔티티/DTD/네트워크 차단으로
+            # XXE(로컬 파일 유출) 및 엔티티 확장 DoS(billion-laughs)를 막는다.
+            # HWPX/OWPML 은 미리 정의된 XML 엔티티만 쓰므로 정상 문서엔 영향 없음.
+            parser = etree.XMLParser(
+                remove_blank_text=False,
+                strip_cdata=False,
+                resolve_entities=False,
+                no_network=True,
+                load_dtd=False,
+            )
             root = etree.fromstring(self._raw[name], parser=parser)
             tree = root.getroottree()
             self._trees[name] = tree
@@ -102,7 +110,7 @@ class HwpxPackage:
 
     def export_text(self) -> str:
         """모든 섹션의 <hp:t> 텍스트를 순서대로 이어붙여 반환."""
-        from document_adapter.hwpx_core.constants import HP_RUN, HP_T
+        from document_adapter.hwpx_core.constants import HP_T
 
         parts: list[str] = []
         for _, root in self.iter_section_roots():

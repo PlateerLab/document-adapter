@@ -8,14 +8,39 @@
 """
 from __future__ import annotations
 
+import inspect
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 _LABEL_NORMALIZE_RE = re.compile(r"[\s·・／/\-:：()\[\]<>*#]+")
+
+
+def _accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
+    """fn 이 ``name`` 키워드 인자(또는 **kwargs)를 받을 수 있는지."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True  # introspection 불가 시 그냥 시도
+    if name in params:
+        return True
+    return any(p.kind == p.VAR_KEYWORD for p in params.values())
+
+
+def _call_cell_writer(fn: Callable[..., str], *args: Any,
+                      allow_merge_redirect: bool) -> str:
+    """set_cell/append_to_cell 호출 래퍼.
+
+    어댑터가 ``allow_merge_redirect`` 를 구현했으면 전달하고, (구버전 ABC 계약을
+    따라) 구현하지 않았으면 생략해 호출한다. fill_form 이 모든 어댑터에서
+    동작하도록 보장 — TypeError 로 깨지지 않는다.
+    """
+    if _accepts_kwarg(fn, "allow_merge_redirect"):
+        return fn(*args, allow_merge_redirect=allow_merge_redirect)
+    return fn(*args)
 
 
 def _normalize_label(s: str) -> str:
@@ -48,7 +73,7 @@ def _candidate_context_labels(
     단순 휴리스틱: 같은 row 의 col=0 anchor text + 그 위로 올라가면서 나오는
     col=0 anchor text 몇 개를 수집.
     """
-    t_idx, r, c = candidate[0], candidate[1], candidate[2]
+    t_idx, r = candidate[0], candidate[1]
     t = tables_by_idx.get(t_idx)
     if t is None:
         return []
@@ -98,7 +123,7 @@ def _describe_cell_context(
     labels = _candidate_context_labels(candidate, tables_by_idx)
     if labels:
         return " / ".join(labels)
-    t_idx, r, c = candidate[0], candidate[1], candidate[2]
+    t_idx = candidate[0]
     t = tables_by_idx.get(t_idx)
     loc = getattr(t, "location", None) if t else None
     return loc or f"table[{t_idx}]"
@@ -163,8 +188,10 @@ class TableSchema:
     location: str | None = None
     merges: list[MergeInfo] = field(default_factory=list)
     parent_path: str | None = None
-    column_widths_cm: list[float] | None = None
-    row_heights_cm: list[float] | None = None
+    # 병합/누락 컬럼은 크기를 알 수 없어 해당 슬롯이 None 일 수 있다
+    # (예: [1.5, None, 2.0]). 소비자는 per-element None 을 처리해야 한다.
+    column_widths_cm: list[float | None] | None = None
+    row_heights_cm: list[float | None] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -320,16 +347,24 @@ class DocumentAdapter(ABC):
         """템플릿의 {{key}}를 context 값으로 치환."""
 
     @abstractmethod
-    def set_cell(self, table_index: int, row: int, col: int, value: str) -> str:
-        """셀 값 교체. 원래 값 반환."""
+    def set_cell(self, table_index: int, row: int, col: int, value: str,
+                 *, allow_merge_redirect: bool = False) -> str:
+        """셀 값 교체. 원래 값 반환.
+
+        ``allow_merge_redirect`` 가 True 면 병합 영역의 non-anchor 좌표를
+        anchor 셀로 redirect 해 쓴다. False(기본)면 MergedCellWriteError.
+        (``fill_form`` 이 이 인자로 호출하므로 구현체는 반드시 받아들여야 한다.)
+        """
 
     @abstractmethod
     def append_to_cell(self, table_index: int, row: int, col: int, value: str,
-                       separator: str = "  ") -> str:
+                       separator: str = "  ",
+                       *, allow_merge_redirect: bool = False) -> str:
         """기존 셀 텍스트 뒤에 ``separator + value``를 덧붙임.
 
         라벨(예: "성  명")을 유지한 채 사용자 입력을 추가하는 용도.
         빈 셀이면 separator 없이 value만 기록. 원래 값 반환.
+        ``allow_merge_redirect`` 의 의미는 :meth:`set_cell` 과 동일.
         """
 
     @abstractmethod
@@ -425,10 +460,6 @@ class DocumentAdapter(ABC):
                     label_index.setdefault(text_norm, []).append(
                         (t.index, r, c, rs, cs, val)
                     )
-
-        # user_keys 는 dot-path 분리 후 뒷부분 기준으로 만든다.
-        # "피해자.금액" 과 "지급정지.금액" 이 섞여 있어도 "금액" 단일로 보호.
-        user_keys = {_normalize_label(_split_dot_path(k)[1]) for k in data.keys()}
 
         filled: list[dict[str, Any]] = []
         not_found: list[str] = []
@@ -552,7 +583,8 @@ class DocumentAdapter(ABC):
             target_key = _normalize_label(target_text)
 
             if mode == "same":
-                old = self.append_to_cell(
+                old = _call_cell_writer(
+                    self.append_to_cell,
                     t_idx, target_r, target_c, value,
                     allow_merge_redirect=not cell.is_anchor,
                 )
@@ -568,7 +600,8 @@ class DocumentAdapter(ABC):
                 # 옆 셀이 다른 라벨 → 덮어쓰면 라벨 손상. 다음 mode 시도.
                 continue
             try:
-                old = self.set_cell(
+                old = _call_cell_writer(
+                    self.set_cell,
                     t_idx, target_r, target_c, value,
                     allow_merge_redirect=(direction != "auto"),
                 )
