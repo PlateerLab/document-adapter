@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from document_adapter import load
+from document_adapter.base import _overflow_risk
 from document_adapter.tools import TOOL_DEFINITIONS, call_tool
 
 # 세 러너(examples/scripts)에 흩어져 있던 에이전트 system 프롬프트의 정식본.
@@ -118,6 +119,7 @@ class FieldResult:
     expectation: FieldExpectation
     actual: str
     ok: bool
+    overflow: bool = False
 
 
 @dataclass
@@ -241,10 +243,14 @@ def _score(
     try:
         for exp in scenario.expectations:
             try:
-                actual = ad.get_cell(exp.table_index, exp.row, exp.col).text
+                cell = ad.get_cell(exp.table_index, exp.row, exp.col)
+                actual, wcm = cell.text, cell.width_cm
             except Exception:
-                actual = ""
-            fields.append(FieldResult(exp, actual, _value_match(actual, exp)))
+                actual, wcm = "", None
+            # placement-aware: 값이 맞아도 칸을 넘쳐 깨지면(overflow) 통과 아님.
+            of = _overflow_risk(actual, wcm)
+            ok = _value_match(actual, exp) and not of
+            fields.append(FieldResult(exp, actual, ok, overflow=of))
 
         for (ti, r, c), before in protected_before.items():
             try:
@@ -257,9 +263,9 @@ def _score(
         ad.close()
 
     n = len(fields)
-    ok = sum(1 for f in fields if f.ok)
-    score = (ok / n) if n else (0.0 if error else 1.0)
-    passed = (n > 0 and ok == n) and not corrupted and error is None
+    n_ok = sum(1 for f in fields if f.ok)
+    score = (n_ok / n) if n else (0.0 if error else 1.0)
+    passed = (n > 0 and n_ok == n) and not corrupted and error is None
     return ScenarioResult(
         name=scenario.name,
         passed=passed,

@@ -19,6 +19,22 @@ HP_CELL_SZ = f"{{{HP_NS}}}cellSz"
 HP_SUBLIST = f"{{{HP_NS}}}subList"
 HS_SEC = f"{{{HS_NS}}}sec"
 
+# 폼 컨트롤 (체크박스/라디오/콤보/리스트/에디트)
+HP_CHECK_BTN = f"{{{HP_NS}}}checkBtn"
+HP_RADIO_BTN = f"{{{HP_NS}}}radioBtn"
+HP_COMBO_BOX = f"{{{HP_NS}}}comboBox"
+HP_LIST_BOX = f"{{{HP_NS}}}listBox"
+HP_EDIT = f"{{{HP_NS}}}edit"
+HP_FORM_TEXT = f"{{{HP_NS}}}text"
+# (localname → 종류) 매핑용
+FORM_CONTROL_TAGS = {
+    HP_CHECK_BTN: "checkBtn",
+    HP_RADIO_BTN: "radioBtn",
+    HP_COMBO_BOX: "comboBox",
+    HP_LIST_BOX: "listBox",
+    HP_EDIT: "edit",
+}
+
 NAMESPACES = {
     "hp": HP_NS,
     "hc": HC_NS,

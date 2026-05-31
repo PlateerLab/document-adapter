@@ -225,6 +225,37 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_form_controls",
+        "description": (
+            "**HWPX 전용**. 표가 아닌 폼 컨트롤(체크박스/라디오/콤보/에디트) 목록을 "
+            "name·kind·caption·value 로 반환. set_form_control 로 채울 대상 파악용. "
+            "표 셀이 아닌 인터랙티브 입력 필드를 다룰 때 사용."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "set_form_control",
+        "description": (
+            "**HWPX 전용**. 이름(name)으로 폼 컨트롤 값을 설정. 체크박스/라디오는 "
+            "value 가 truthy('Y'/'체크'/true) 면 체크, 에디트/콤보는 문자열을 기록. "
+            "get_form_controls 로 name 을 먼저 확인."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "value": {"type": ["string", "boolean"]},
+                "output_path": {"type": "string"},
+            },
+            "required": ["path", "name", "value"],
+        },
+    },
+    {
         "name": "fill_form",
         "description": (
             "라벨 이름으로 값 셀을 자동 탐지해 **일괄 채우기**. 좌표 (table_index, row, col) "
@@ -484,6 +515,41 @@ def set_shape_text(path: str, slide_index: int, shape_id: int, text: str,
     }
 
 
+def get_form_controls(path: str) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        ctrls = doc.get_form_controls()
+    finally:
+        doc.close()
+    return {
+        "format": doc.format,
+        "source": str(path),
+        "control_count": len(ctrls),
+        "controls": ctrls,
+    }
+
+
+def set_form_control(path: str, name: str, value: Any,
+                     output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        old = doc.set_form_control(name, value)
+        doc.save()
+    finally:
+        doc.close()
+
+    return {
+        "output_path": str(target),
+        "name": name,
+        "previous_value": old,
+        "new_value": value,
+    }
+
+
 def fill_form(path: str, data: dict[str, str],
               direction: str = "auto", strict: bool = False,
               output_path: str | None = None) -> dict[str, Any]:
@@ -514,6 +580,8 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "fill_form": fill_form,
     "get_shapes": get_shapes,
     "set_shape_text": set_shape_text,
+    "get_form_controls": get_form_controls,
+    "set_form_control": set_form_control,
 }
 
 

@@ -24,6 +24,8 @@ from document_adapter.hwpx_core import (
     HP_TBL,
     HP_TC,
     HP_TR,
+    HP_FORM_TEXT,
+    FORM_CONTROL_TAGS,
     HwpxPackage,
     cell_paragraph_texts,
     cell_text,
@@ -404,3 +406,54 @@ class HwpxAdapter(DocumentAdapter):
                 self.set_cell(table_index, new_row_idx, i, value)
             except MergedCellWriteError:
                 continue
+
+    # ---- 폼 컨트롤 (체크박스/라디오/콤보/리스트/에디트) ----
+    def get_form_controls(self) -> list[dict[str, Any]]:
+        """폼 컨트롤 목록. 표가 아닌 인터랙티브 필드를 노출."""
+        out: list[dict[str, Any]] = []
+        for _, root in self._pkg.iter_section_roots():
+            for el in root.iter():
+                kind = FORM_CONTROL_TAGS.get(el.tag)
+                if not kind:
+                    continue
+                info: dict[str, Any] = {
+                    "name": el.get("name", ""),
+                    "kind": kind,
+                    "caption": el.get("caption", ""),
+                }
+                if kind in ("checkBtn", "radioBtn"):
+                    info["value"] = el.get("value", "")
+                    info["checked"] = el.get("value", "").upper() == "CHECKED"
+                elif kind == "edit":
+                    te = el.find(HP_FORM_TEXT)
+                    info["value"] = (te.text or "") if te is not None else ""
+                else:  # combo / list
+                    info["value"] = el.get("value", "")
+                out.append(info)
+        return out
+
+    def set_form_control(self, name: str, value: Any) -> str:
+        """이름으로 폼 컨트롤 값을 설정하고 기존 값을 반환."""
+        truthy = {"y", "yes", "true", "1", "checked", "check",
+                  "체크", "선택", "o", "on", "예", "✓"}
+        for section_name, root in self._pkg.iter_section_roots():
+            for el in root.iter():
+                kind = FORM_CONTROL_TAGS.get(el.tag)
+                if not kind or el.get("name") != name:
+                    continue
+                if kind in ("checkBtn", "radioBtn"):
+                    old = el.get("value", "")
+                    checked = value is True or str(value).strip().lower() in truthy
+                    el.set("value", "CHECKED" if checked else "UNCHECKED")
+                elif kind == "edit":
+                    te = el.find(HP_FORM_TEXT)
+                    if te is None:
+                        te = etree.SubElement(el, HP_FORM_TEXT)
+                    old = te.text or ""
+                    te.text = str(value)
+                else:  # combo / list
+                    old = el.get("value", "")
+                    el.set("value", str(value))
+                self._pkg.mark_dirty(section_name)
+                return old
+        raise ValueError(f"form control not found: {name!r}")
