@@ -26,6 +26,9 @@ from document_adapter.hwpx_core.constants import (
     HP_TBL,
     HP_TC,
     HP_TR,
+    HP_EDIT,
+    HP_FORM_TEXT,
+    FORM_CONTROL_TAGS,
 )
 from document_adapter.hwpx_core.grid import GridEntry, iter_grid, table_shape
 from document_adapter.hwpx_core.package import HwpxPackage
@@ -55,6 +58,9 @@ __all__ = [
     "HP_TBL",
     "HP_TC",
     "HP_TR",
+    "HP_EDIT",
+    "HP_FORM_TEXT",
+    "FORM_CONTROL_TAGS",
     "GridEntry",
     "HwpxPackage",
     "iter_grid",

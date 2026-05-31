@@ -264,6 +264,94 @@ def test_fill_form_duplicate_label_is_ambiguous(tmp_path: Path) -> None:
     assert len(r["filled"]) == 0
 
 
+def _make_hwpx_with_form_controls(path: Path) -> None:
+    """python-hwpx 스켈레톤 section0 에 checkBtn/edit 폼 컨트롤을 주입."""
+    base = path.with_suffix(".base.hwpx")
+    _make_form_hwpx(base, [("동의", "")])
+    HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+    with zipfile.ZipFile(base, "r") as zin:
+        names = zin.namelist()
+        raw = {n: zin.read(n) for n in names}
+    root = etree.fromstring(raw["Contents/section0.xml"])
+    p = root.find(f"{{{HP}}}p")
+    run = etree.SubElement(p, f"{{{HP}}}run")
+    cb = etree.SubElement(run, f"{{{HP}}}checkBtn")
+    cb.set("name", "CB1")
+    cb.set("caption", "동의")
+    cb.set("value", "UNCHECKED")
+    ed = etree.SubElement(run, f"{{{HP}}}edit")
+    ed.set("name", "ED1")
+    etree.SubElement(ed, f"{{{HP}}}text")
+    raw["Contents/section0.xml"] = etree.tostring(root, xml_declaration=True,
+                                                  encoding="UTF-8")
+    with zipfile.ZipFile(path, "w") as zout:
+        for n in names:
+            zout.writestr(n, raw[n])
+    base.unlink()
+
+
+def test_form_controls_get_and_set(tmp_path: Path) -> None:
+    """HWPX 폼 컨트롤(체크박스/에디트) 읽기·쓰기·영속 (#1 갭)."""
+    src = tmp_path / "fc.hwpx"
+    _make_hwpx_with_form_controls(src)
+    ad = load(src)
+    ctrls = {c["name"]: c for c in ad.get_form_controls()}
+    assert "CB1" in ctrls and ctrls["CB1"]["kind"] == "checkBtn"
+    assert "ED1" in ctrls and ctrls["ED1"]["kind"] == "edit"
+    assert ctrls["CB1"]["checked"] is False
+
+    ad.set_form_control("CB1", "Y")
+    ad.set_form_control("ED1", "홍길동")
+    ad.save(src)
+    ad.close()
+
+    ad2 = load(src)
+    after = {c["name"]: c for c in ad2.get_form_controls()}
+    ad2.close()
+    assert after["CB1"]["checked"] is True
+    assert after["ED1"]["value"] == "홍길동"
+
+
+def test_form_controls_unsupported_format(tmp_path: Path) -> None:
+    """DOCX/PPTX 는 폼 컨트롤 기본 빈 리스트 + set 시 NotImplementedForFormat."""
+    from document_adapter.base import NotImplementedForFormat
+
+    from document_adapter.eval.fixtures import docx_blank_form
+
+    src = tmp_path / "f.docx"
+    docx_blank_form(src)
+    ad = load(src)
+    assert ad.get_form_controls() == []
+    with pytest.raises(NotImplementedForFormat):
+        ad.set_form_control("x", "y")
+    ad.close()
+
+
+def test_overflow_risk_helper() -> None:
+    """폭 추정 기반 오버플로 위험 판정: 좁은 칸=위험, 넓은 칸=안전, 미상=보류."""
+    from document_adapter.base import _overflow_risk
+
+    assert _overflow_risk("2026-06-01", 0.4) is True    # 0.4cm 스페이서 → 깨짐
+    assert _overflow_risk("2026-06-01", 6.4) is False    # 6.4cm 값칸 → 정상
+    assert _overflow_risk("서울시 강남구 테헤란로 1", 2.0) is True
+    assert _overflow_risk("x", None) is False            # 폭 미상 → 판단 보류
+    assert _overflow_risk("", 0.1) is False
+
+
+def test_fill_form_reports_overflow_warnings(tmp_path: Path) -> None:
+    """fill_form 결과에 overflow_risk 플래그와 overflow_warnings 목록이 포함되고,
+    넓은 값칸에 정상 배치되면 경고가 없어야 한다."""
+    src = tmp_path / "f.hwpx"
+    _make_form_hwpx(src, [("성명", ""), ("부서", "")])
+    ad = load(src)
+    r = ad.fill_form({"성명": "홍길동", "부서": "개발팀"})
+    ad.close()
+    assert "overflow_warnings" in r
+    assert all("overflow_risk" in f for f in r["filled"])
+    # 합성 2열 폼은 값칸이 충분히 넓어 오버플로 없음
+    assert r["overflow_warnings"] == []
+
+
 def test_get_cell_out_of_bounds_raises(tmp_path: Path) -> None:
     """경계를 벗어난 좌표는 CellOutOfBoundsError(IndexError 하위)."""
     from document_adapter.base import CellOutOfBoundsError

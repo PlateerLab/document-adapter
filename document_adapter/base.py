@@ -19,6 +19,34 @@ from typing import Any, Callable
 _LABEL_NORMALIZE_RE = re.compile(r"[\s·・／/\-:：()\[\]<>*#]+")
 
 
+def _estimate_text_width_cm(text: str) -> float:
+    """10pt 기준 대략적인 글자폭 합(cm). 한글/CJK ~0.35cm, 그 외 ~0.20cm.
+
+    정밀 측정이 아니라 "이 값이 칸 너비를 넘겨 줄바꿈/세로깨짐 위험이 있나"를
+    가늠하기 위한 보수적 추정.
+    """
+    w = 0.0
+    for ch in text:
+        w += 0.35 if ord(ch) > 0x2E7F else 0.20
+    return w
+
+
+# 셀 패딩/마진·폰트 추정 오차를 감안한 여유 배율. 경미한 초과는 무시하고
+# 심각한 초과(예: 2.0cm 텍스트를 0.4cm 칸에)만 경고하기 위함.
+_OVERFLOW_TOLERANCE = 1.15
+
+
+def _overflow_risk(text: str, width_cm: float | None) -> bool:
+    """값이 셀 너비를 넘겨 오버플로(세로 깨짐)될 위험이 있는지.
+
+    width_cm 가 없으면(None) 판단 보류(False). 폭 정보가 있을 때만,
+    추정 글자폭이 칸폭의 _OVERFLOW_TOLERANCE 배를 넘을 때 경고한다.
+    """
+    if not width_cm or width_cm <= 0:
+        return False
+    return _estimate_text_width_cm(text) > width_cm * _OVERFLOW_TOLERANCE
+
+
 def _accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
     """fn 이 ``name`` 키워드 인자(또는 **kwargs)를 받을 수 있는지."""
     try:
@@ -400,6 +428,26 @@ class DocumentAdapter(ABC):
             f"{self.format} does not support shape-level text editing"
         )
 
+    # ---- form controls (체크박스/라디오/콤보/에디트 — HWPX 전용) ----
+    def get_form_controls(self) -> list[dict[str, Any]]:
+        """폼 컨트롤 목록. 표가 아닌 인터랙티브 필드(체크박스/에디트 등).
+
+        HWPX 에서만 의미가 있다. 그 외 포맷은 빈 리스트.
+        각 항목: {name, kind, caption, value, checked?}.
+        """
+        return []
+
+    def set_form_control(self, name: str, value: Any) -> str:
+        """이름으로 폼 컨트롤 값을 설정. 기존 값을 반환.
+
+        - check/radio: value 가 truthy("Y"/"체크"/True/"checked") → CHECKED
+        - edit/combo: 문자열을 값으로 기록
+        HWPX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support form controls"
+        )
+
     # ---- label-based form filling ----
     def fill_form(
         self,
@@ -464,6 +512,7 @@ class DocumentAdapter(ABC):
         filled: list[dict[str, Any]] = []
         not_found: list[str] = []
         ambiguous: list[dict[str, Any]] = []
+        overflow: list[dict[str, Any]] = []
 
         for label, value in data.items():
             section_hint, actual_label = _split_dot_path(label)
@@ -516,15 +565,22 @@ class DocumentAdapter(ABC):
             # 더 치명적이라 보수적 default. 예시값이 있는 양식에서 값 셀을 덮어쓰려면
             # direction="right"/"below" 로 명시.)
             other_label_keys = set(label_index.keys()) - {key}
+            ncols = tables_by_idx[t_idx].cols if t_idx in tables_by_idx else c + cs + 1
             action, coord, old = self._fill_one_cell(
-                t_idx, r, c, rs, cs, str(value), direction, other_label_keys
+                t_idx, r, c, rs, cs, str(value), direction, other_label_keys, ncols
             )
             if coord is None:
                 # 탐색 실패 — fallback 으로 same 에 append_to_cell 권할지 고민했지만
                 # 의도치 않은 라벨 오염 방지 차원에서 그냥 not_found 에 기록.
                 not_found.append(label)
                 continue
-            filled.append({
+            # 오버플로 위험 판정: 값이 들어간 칸 너비(width_cm) 대비 추정 글자폭.
+            try:
+                wcm = self.get_cell(coord[0], coord[1], coord[2]).width_cm
+            except (IndexError, ValueError):
+                wcm = None
+            risk = _overflow_risk(str(value), wcm)
+            entry = {
                 "label": label,
                 "table_index": coord[0],
                 "row": coord[1],
@@ -532,9 +588,50 @@ class DocumentAdapter(ABC):
                 "action": action,
                 "old_value": old,
                 "new_value": str(value),
-            })
+                "overflow_risk": risk,
+            }
+            if wcm is not None:
+                entry["cell_width_cm"] = wcm
+            filled.append(entry)
+            if risk:
+                overflow.append({"label": label, "table_index": coord[0],
+                                 "row": coord[1], "col": coord[2],
+                                 "cell_width_cm": wcm, "value": str(value)})
 
-        return {"filled": filled, "not_found": not_found, "ambiguous": ambiguous}
+        return {"filled": filled, "not_found": not_found,
+                "ambiguous": ambiguous, "overflow_warnings": overflow}
+
+    def _scan_value_cell_right(
+        self,
+        t_idx: int,
+        r: int,
+        start_c: int,
+        ncols: int,
+    ) -> int | None:
+        """라벨 오른쪽으로 다음 라벨 전까지 스캔해 **가장 넓은 빈 anchor 값칸**의
+        열을 반환. 라벨과 값 영역 사이의 얇은 스페이서 칸(예: 0.4cm)에 값이 들어가
+        세로로 깨지는 것을 방지한다 — 이미 추출하는 cell width(cm)를 활용. 없으면 None.
+
+        non-anchor 슬롯은 건너뛰고, 비어있지 않은 anchor(=다음 라벨/값 영역)에서 멈춘다.
+        스캔은 ``ncols`` 로 명시적으로 bound 한다 (get_cell 의 경계 예외에 의존하지 않음).
+        """
+        best: tuple[float, int] | None = None
+        tc = start_c
+        while tc < ncols:
+            try:
+                cell = self.get_cell(t_idx, r, tc)
+            except (IndexError, ValueError):
+                break
+            if not cell.is_anchor:
+                tc += 1
+                continue
+            if (cell.text or "").strip():
+                break  # 다음 라벨/값 영역 시작 → 스캔 종료
+            width = cell.width_cm if cell.width_cm is not None else 0.0
+            if best is None or width > best[0]:
+                best = (width, tc)
+            tc += max(1, cell.span[1])
+        return best[1] if best else None
 
     def _fill_one_cell(
         self,
@@ -546,6 +643,7 @@ class DocumentAdapter(ABC):
         value: str,
         direction: str,
         other_label_keys: set[str],
+        ncols: int,
     ) -> tuple[str, tuple[int, int, int] | None, str]:
         """한 라벨에 대해 direction 에 따라 값 셀을 찾아 값을 쓴다.
 
@@ -568,7 +666,15 @@ class DocumentAdapter(ABC):
 
         for mode in order:
             if mode == "right":
-                target_r, target_c = r, c + colspan
+                if direction == "auto":
+                    # 얇은 스페이서 칸을 건너뛰고 가장 넓은 빈 값칸을 고른다.
+                    tc = self._scan_value_cell_right(
+                        t_idx, r, c + colspan, ncols)
+                    if tc is None:
+                        continue  # 오른쪽에 적합한 빈 값칸 없음 → below/same
+                    target_r, target_c = r, tc
+                else:
+                    target_r, target_c = r, c + colspan
             elif mode == "below":
                 target_r, target_c = r + rowspan, c
             else:  # same
