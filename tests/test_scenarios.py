@@ -381,9 +381,13 @@ def test_docx_irregular_horizontal_merge_loads(tmp_path: Path) -> None:
     tbls = ad.get_tables()        # 수정 전에는 여기서 ValueError 로 크래시
     ad_cols = tbls[0].cols
     cell = ad.get_cell(0, 0, 0)   # 셀 접근도 크래시 없이 가능해야
+    placeholders = ad.get_placeholders()   # get_placeholders 도 row.cells 미사용
+    schema_fmt = ad.get_schema().format    # inspect_document 경로 전체 무크래시
     ad.close()
     assert tbls and ad_cols == 4
     assert cell.span[1] == 4      # gridSpan=4 → colspan 4 (가로병합 인식)
+    assert isinstance(placeholders, list)
+    assert schema_fmt == "docx"
 
 
 def _make_template(path: Path, fmt: str) -> None:
