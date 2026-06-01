@@ -26,6 +26,7 @@ HP_COMBO_BOX = f"{{{HP_NS}}}comboBox"
 HP_LIST_BOX = f"{{{HP_NS}}}listBox"
 HP_EDIT = f"{{{HP_NS}}}edit"
 HP_FORM_TEXT = f"{{{HP_NS}}}text"
+HP_LIST_ITEM = f"{{{HP_NS}}}listItem"
 # (localname → 종류) 매핑용
 FORM_CONTROL_TAGS = {
     HP_CHECK_BTN: "checkBtn",
