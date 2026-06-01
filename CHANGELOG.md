@@ -7,6 +7,63 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-01
+
+실제 공공서식(지급정지요청서 등)과 다운로드한 docx/hwpx 폼들로 검증하며 드러난
+결함을 수정하고, 폼 컨트롤·LLM 평가 하니스·render_template 일관화를 추가했다.
+대부분의 변경이 **실증 또는 실제 폼이 드러낸 결함**에 기반한다.
+
+### Added
+- **폼 컨트롤 지원** (`get_form_controls` / `set_form_control`) — 표가 아닌
+  인터랙티브 필드(체크박스·라디오·에디트·콤보·리스트)를 읽고 채운다.
+  comboBox/listBox 는 옵션(`items`)과 현재값을 노출. MCP 도구 2 개 신규 → **총 11 개**.
+- **LLM 주도 평가 하니스** (`document_adapter.eval`) — `ModelBackend`(pluggable),
+  `run_scenario`/`evaluate`(결과 기반 채점: 필드 정합 + 라벨 보호 + 오버플로),
+  공개 합성 양식 시나리오. 가짜 백엔드로 채점 로직을 API 없이 결정적으로 검증.
+  실제 모델 러너 예시(`examples/eval_run.py`, Ollama/OpenAI·vLLM 호환).
+- **`render_template(context, on_missing=...)`** — 누락 키 처리 정책
+  (`blank`/`leave`/`error`)을 3 포맷 동일하게 제어. `{"used", "missing"}` 반환.
+- **`fill_form` 오버플로 인지** — 값이 칸 너비를 넘겨 깨질 위험을 `overflow_risk`
+  플래그 + `overflow_warnings` 로 보고 (`width_cm` 활용).
+
+### Fixed
+- **보안**: `hwpx_core` XML 파서에 XXE / billion-laughs 하드닝
+  (`resolve_entities=False`, `no_network`, `load_dtd=False`).
+- **DOCX 병합 표 크래시**: 가로(gridSpan)+세로(vMerge) 병합이 섞인 표에서
+  `python-docx` 의 `row.cells` 가 `ValueError` 로 깨지던 문제 — `_build_grid` 를
+  OOXML 레이어에서 직접 계산하도록 재작성. (실제 docx 폼에서 발견)
+- **`render_template` 포맷 불일치**: pptx/hwpx 가 누락 키를 `{{missing}}` 리터럴로
+  출력에 노출하던 문제 — `on_missing="blank"`(기본)로 3 포맷 동일하게 정렬.
+- **`fill_form` 값셀 선택**: 라벨과 값 영역 사이의 얇은 스페이서 칸에 값이 들어가
+  세로로 깨지던 문제(실제 지급정지요청서 접수일자) — `width_cm` 기준 가장 넓은
+  값칸 선택, `below` 방향도 대칭. 스캔은 `ncols`/`nrows` 로 bound(무한루프 방지).
+- **ABC 계약 정합**: `set_cell`/`append_to_cell` 추상 시그니처에
+  `allow_merge_redirect` 누락 — ABC 만 보고 구현한 어댑터에서 `fill_form` 이
+  `TypeError` 로 깨지던 문제 수정.
+- **타입 정직화**: `TableSchema.column_widths_cm` / `row_heights_cm` 를
+  `list[float | None]` 로 정정(병합 컬럼은 `None` 가능).
+- **hwpx comboBox/listBox**: 현재값을 `<text>` 자식에서, 옵션을 `listItem` 에서
+  올바로 처리(기존엔 존재하지 않는 `value` 속성을 읽어 항상 빈 값).
+
+### Changed
+- **CI**: `ruff` + `mypy` 잡 추가, `tests/` 전체 실행(이전엔 smoke 만).
+- **`render_template` 반환 타입**: `None` → `{"used", "missing"}`.
+  MCP `render_template` 응답: `placeholders_after` 제거, `rendered_keys` /
+  `missing_keys` 추가.
+- **`save()` byte 안정성** 문서화: HWPX 는 미편집 파트 byte-identical,
+  DOCX/PPTX 는 패키지 전체 재작성(README 참조).
+
+### Verified
+- H100 vLLM(Qwen3.6-27B)로 실제 지급정지요청서(28×16, 병합 57) end-to-end
+  **5/5 PASS** (필드 정합·overflow 0·라벨 무손상, dot-path 자동).
+- 다운로드한 실제 docx/hwpx 폼 다수 + 7.3MB/110 표 정부보고서 round-trip(byte 안정).
+- 테스트 72 종, `ruff`·`mypy` 클린.
+
+### Migration
+- `render_template` 가 이제 dict 를 반환한다(기존엔 `None`). 반환값을 무시하던
+  호출 코드는 영향 없음. MCP `render_template` 응답에서 `placeholders_after` 를
+  쓰던 코드는 `missing_keys` 로 변경.
+
 ## [0.8.1] — 2026-04-17
 
 ### Added (LLM UX — inspect_document PPTX shape 가시성)
