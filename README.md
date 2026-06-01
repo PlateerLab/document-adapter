@@ -19,9 +19,11 @@
 | `.docx` | `docxtpl` + `python-docx` | Jinja2 (`{%tr%}` loop 포함) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `.pptx` | `python-pptx` + 자체 lxml 확장 | `{{key}}` 치환 | ✅ (슬라이드 위치 포함) | ✅ | — (포맷 미지원) | ✅ | ✅ (v0.5+) |
 | `.hwpx` | 자체 `hwpx_core` (lxml + zipfile) | `{{key}}` 치환 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `.xlsx` | `openpyxl` | `{{key}}` 치환 | ✅ (시트 = 표) | ✅ | — | ✅ | ✅ |
 
 - HWPX는 한컴오피스 설치가 **불필요**합니다 (macOS/Linux 서버에서 그대로 동작).
 - 구버전 `.hwp`(바이너리 포맷)는 지원하지 않습니다 — `.hwpx`로 변환 후 사용하세요.
+- **XLSX (v0.10+)**: 각 워크시트를 하나의 표로 매핑(`table_index` = 시트 인덱스, `location` = 시트명). 병합 셀·`fill_form`·`render_template` 동일 인터페이스로 동작.
 - 병합 셀: 3개 포맷 모두 preview에 `null` 슬롯 + `merges` 메타로 구조 노출. non-anchor 좌표에 쓰기는 `MergedCellWriteError`로 거부.
 - **셀 크기 메타 (v0.6+)**: `get_tables`는 `column_widths_cm` / `row_heights_cm`, `get_cell`은 `width_cm` / `height_cm` / `char_count`를 반환합니다. LLM이 좁은 셀(예: 1.7×0.7cm 배지)에 긴 텍스트를 넣어 오버플로 되는 것을 사전에 판단할 수 있습니다.
 

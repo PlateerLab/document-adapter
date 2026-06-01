@@ -79,6 +79,9 @@ class PptxAdapter(DocumentAdapter):
                     for row in shape.table.rows:
                         for cell in row.cells:
                             yield cell.text_frame
+            # 슬라이드 노트의 {{key}} 도 포함 (get_placeholders·render 공통)
+            if slide.has_notes_slide:
+                yield slide.notes_slide.notes_text_frame
 
     @staticmethod
     def _dimensions(table) -> tuple[int, int]:

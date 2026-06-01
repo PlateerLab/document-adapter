@@ -7,6 +7,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-01
+
+코드 감사로 포맷별(docx/pptx/xlsx) 격차를 점검해 **Excel 지원을 신규 추가**하고,
+inspect 가 병합 docx 에서 깨지던 버그와 머리말/꼬리말·노트 플레이스홀더 누락을 수정.
+
+### Added
+- **Excel(`.xlsx`) 지원 — `XlsxAdapter`** (openpyxl 기반). 각 워크시트를 하나의 표로
+  매핑(`table_index`=시트 인덱스, `location`=시트명). `get_tables`/`get_cell`/
+  `set_cell`/`append_to_cell`/`append_row`/`render_template` 구현, `fill_form` 은
+  base 구현으로 자동 동작. 병합 셀 anchor/span 인지(비-anchor 쓰기는
+  `MergedCellWriteError`), 셀 크기(cm) 메타 제공. `load("*.xlsx")` 자동 디스패치.
+  MCP 도구는 확장자 디스패치로 그대로 동작.
+
+### Fixed
+- **docx `get_placeholders` 병합표 크래시**: `row.cells` 가 가로+세로 병합 docx 에서
+  `ValueError` 로 깨져 `inspect_document`/`get_schema` 가 실패하던 문제 —
+  `_build_grid` anchor 셀 순회로 수정(`get_tables` 와 동일 견고 경로).
+- **머리말/꼬리말·노트 플레이스홀더 누락**: docx `get_placeholders` 가 본문만 보고
+  머리말/꼬리말을, pptx 가 슬라이드 노트를 놓쳐 `render` 는 채우는데 `inspect`/
+  `used`/`missing` 에 안 잡히던 불일치 수정.
+
+### Changed
+- 런타임 의존성에 `openpyxl>=3.1` 추가.
+
+### Verified
+- xlsx 폼(병합 헤더·라벨-값·템플릿) inspect/fill_form/render/round-trip + MCP 경로,
+  docx 머리말/꼬리말·pptx 노트 커버리지 회귀 테스트. 테스트 77 종, ruff·mypy 클린.
+
 ## [0.9.0] — 2026-06-01
 
 실제 공공서식(지급정지요청서 등)과 다운로드한 docx/hwpx 폼들로 검증하며 드러난

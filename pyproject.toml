@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "document-adapter"
-version = "0.9.0"
-description = "LLM-friendly document template editing (DOCX/PPTX/HWPX) with MCP server and Claude API tool-use support"
+version = "0.10.0"
+description = "LLM-friendly document template editing (DOCX/PPTX/HWPX/XLSX) with MCP server and Claude API tool-use support"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -58,6 +58,7 @@ dependencies = [
     "python-docx>=1.2",
     "docxtpl>=0.20",
     "python-pptx>=1.0",
+    "openpyxl>=3.1",
     "lxml>=5.0",
     "mcp>=1.0",
 ]

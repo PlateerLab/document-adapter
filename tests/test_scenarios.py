@@ -496,6 +496,110 @@ def test_fill_form_reports_overflow_warnings(tmp_path: Path) -> None:
     assert r["overflow_warnings"] == []
 
 
+def _make_xlsx_form(path: Path) -> None:
+    """병합 헤더 + 라벨-값 + 템플릿 키를 가진 xlsx 폼."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "신청서"
+    ws["A1"] = "신청 정보"
+    ws.merge_cells("A1:B1")
+    ws["A2"] = "성명"
+    ws["A3"] = "부서"
+    ws["A4"] = "제목 {{title}}"
+    wb.save(str(path))
+
+
+def test_xlsx_inspect_fill_render_roundtrip(tmp_path: Path) -> None:
+    """XlsxAdapter: 시트→표 인식, 병합, fill_form(base 상속), render, 영속."""
+    src = tmp_path / "form.xlsx"
+    _make_xlsx_form(src)
+    ad = load(src)
+    assert ad.format == "xlsx"
+    t = ad.get_tables()[0]
+    assert (t.rows, t.cols) == (4, 2)
+    assert t.location == "신청서"
+    assert [(m.anchor, m.span) for m in t.merges] == [((0, 0), (1, 2))]
+    assert ad.get_placeholders() == ["title"]
+    # 병합 anchor/non-anchor
+    assert ad.get_cell(0, 0, 0).span == (1, 2)
+    assert ad.get_cell(0, 0, 1).is_anchor is False
+    # fill_form (base 구현이 자동 동작)
+    r = ad.fill_form({"성명": "홍길동", "부서": "개발팀"})
+    assert len(r["filled"]) == 2
+    rr = ad.render_template({"title": "2026 보고서"})
+    assert rr["used"] == ["title"]
+    out = tmp_path / "out.xlsx"
+    ad.save(out)
+    ad.close()
+
+    ad2 = load(out)
+    assert ad2.get_cell(0, 1, 1).text == "홍길동"
+    assert ad2.get_cell(0, 2, 1).text == "개발팀"
+    assert "2026 보고서" in ad2.get_cell(0, 3, 0).text
+    ad2.close()
+
+
+def test_xlsx_merged_cell_write_rejected(tmp_path: Path) -> None:
+    """병합 non-anchor 좌표 쓰기는 MergedCellWriteError (allow_merge_redirect로 우회)."""
+    from document_adapter.base import MergedCellWriteError
+
+    src = tmp_path / "f.xlsx"
+    _make_xlsx_form(src)
+    ad = load(src)
+    with pytest.raises(MergedCellWriteError):
+        ad.set_cell(0, 0, 1, "X")          # (0,1)은 A1:B1 병합의 non-anchor
+    ad.set_cell(0, 0, 1, "X", allow_merge_redirect=True)  # anchor로 redirect
+    assert ad.get_cell(0, 0, 0).text == "X"
+    ad.close()
+
+
+def test_xlsx_via_tools(tmp_path: Path) -> None:
+    """MCP call_tool 경로(load 디스패치)로도 xlsx 가 동작."""
+    from document_adapter.tools import call_tool
+
+    src = tmp_path / "f.xlsx"
+    _make_xlsx_form(src)
+    insp = call_tool("inspect_document", {"path": str(src)})
+    assert insp["format"] == "xlsx"
+    assert insp["tables"][0]["location"] == "신청서"
+
+
+def test_docx_header_footer_placeholders(tmp_path: Path) -> None:
+    """docx get_placeholders 가 머리말/꼬리말의 {{key}} 도 포함해야 한다."""
+    from docx import Document
+    src = tmp_path / "hf.docx"
+    d = Document()
+    d.add_paragraph("본문 {{body}}")
+    sec = d.sections[0]
+    sec.header.paragraphs[0].text = "머리말 {{header_key}}"
+    sec.footer.paragraphs[0].text = "꼬리말 {{footer_key}}"
+    d.save(str(src))
+    ad = load(src)
+    ph = ad.get_placeholders()
+    ad.close()
+    assert {"body", "header_key", "footer_key"} <= set(ph)
+
+
+def test_pptx_notes_placeholders_and_render(tmp_path: Path) -> None:
+    """pptx 슬라이드 노트의 {{key}} 가 감지·렌더돼야 한다."""
+    from pptx import Presentation
+    src = tmp_path / "n.pptx"
+    pr = Presentation()
+    s = pr.slides.add_slide(pr.slide_layouts[6])
+    s.notes_slide.notes_text_frame.text = "노트 {{note_key}}"
+    pr.save(str(src))
+    ad = load(src)
+    assert "note_key" in ad.get_placeholders()
+    ad.render_template({"note_key": "확인됨"})
+    ad.save(src)
+    ad.close()
+    pr2 = Presentation(str(src))
+    notes = [sl.notes_slide.notes_text_frame.text
+             for sl in pr2.slides if sl.has_notes_slide]
+    assert any("확인됨" in n for n in notes)
+
+
 def test_get_cell_out_of_bounds_raises(tmp_path: Path) -> None:
     """경계를 벗어난 좌표는 CellOutOfBoundsError(IndexError 하위)."""
     from document_adapter.base import CellOutOfBoundsError
