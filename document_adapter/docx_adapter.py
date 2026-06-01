@@ -186,6 +186,11 @@ class DocxAdapter(DocumentAdapter):
         keys: set[str] = set()
         for p in self._doc.paragraphs:
             keys.update(TAG_PATTERN.findall(p.text))
+        # 머리말/꼬리말 (docxtpl render 는 이미 채우므로 inspect 와 일치시킨다)
+        for section in self._doc.sections:
+            for hf in (section.header, section.footer):
+                for p in hf.paragraphs:
+                    keys.update(TAG_PATTERN.findall(p.text))
         # 모든 (중첩 포함) 표 셀에서 수집. row.cells 는 병합표에서 깨지므로
         # _build_grid 의 anchor 셀만 순회한다(get_tables 와 동일 견고 경로).
         for _, tbl, _ in self._iter_tables():

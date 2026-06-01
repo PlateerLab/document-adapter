@@ -15,6 +15,7 @@ from .base import DocumentAdapter, DocumentSchema, TableSchema
 from .docx_adapter import DocxAdapter
 from .hwpx_adapter import HwpxAdapter
 from .pptx_adapter import PptxAdapter
+from .xlsx_adapter import XlsxAdapter
 
 __all__ = [
     "load",
@@ -24,12 +25,14 @@ __all__ = [
     "DocxAdapter",
     "PptxAdapter",
     "HwpxAdapter",
+    "XlsxAdapter",
 ]
 
 _ADAPTERS: dict[str, type[DocumentAdapter]] = {
     ".docx": DocxAdapter,
     ".pptx": PptxAdapter,
     ".hwpx": HwpxAdapter,
+    ".xlsx": XlsxAdapter,
 }
 
 
