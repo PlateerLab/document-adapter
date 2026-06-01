@@ -89,7 +89,8 @@ def test_tool_render(tmp_path: Path) -> None:
         "context": CONTEXT,
     })
     assert result["rendered_count"] == 2
-    assert result["placeholders_after"] == []
+    assert result["missing_keys"] == []
+    assert sorted(result["rendered_keys"]) == ["author", "title"]
     assert Path(result["output_path"]).exists()
 
 

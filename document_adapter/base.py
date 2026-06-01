@@ -371,8 +371,33 @@ class DocumentAdapter(ABC):
 
     # ---- editing ----
     @abstractmethod
-    def render_template(self, context: dict[str, Any]) -> None:
-        """템플릿의 {{key}}를 context 값으로 치환."""
+    def render_template(self, context: dict[str, Any], *,
+                        on_missing: str = "blank") -> dict[str, list[str]]:
+        """템플릿의 {{key}}를 context 값으로 치환한다.
+
+        on_missing: 템플릿에 있으나 context 에 없는 키의 처리 (3포맷 동일 정책):
+          - "blank"(기본): 빈 문자열로 치환 — 출력에 미완성 플레이스홀더를 남기지 않음
+          - "leave": ``{{key}}`` 를 그대로 둠
+          - "error": 누락 키가 있으면 ValueError
+        반환: ``{"used": [...], "missing": [...]}`` (템플릿에 등장한 키 기준).
+        """
+
+    def _render_report(self, placeholders: list[str], context: dict[str, Any],
+                       on_missing: str) -> dict[str, list[str]]:
+        """render_template 공통: on_missing 검증 + used/missing 분류.
+
+        각 어댑터가 치환 *전에* 호출한다. on_missing='error' 이고 누락 키가
+        있으면 여기서 ValueError 를 던져 문서를 건드리지 않는다.
+        """
+        if on_missing not in ("blank", "leave", "error"):
+            raise ValueError(
+                f"on_missing must be blank/leave/error, got {on_missing!r}")
+        provided = set(context)
+        used = [p for p in placeholders if p in provided]
+        missing = [p for p in placeholders if p not in provided]
+        if on_missing == "error" and missing:
+            raise ValueError(f"missing placeholders: {missing}")
+        return {"used": used, "missing": missing}
 
     @abstractmethod
     def set_cell(self, table_index: int, row: int, col: int, value: str,
