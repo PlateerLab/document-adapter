@@ -287,6 +287,23 @@ LLM은 이 preview를 보고 **"빈 셀이 어디 있는지 / 어떤 값을 넣�
 
 loop / if / filter는 지원하지 않습니다. PPTX는 placeholder가 여러 `run`으로 쪼개질 수 있어, 어댑터가 paragraph 전체 텍스트를 재조립한 뒤 첫 `run`에 다시 담는 방식으로 처리합니다 (서식 일부 손실 가능).
 
+### 누락 키 처리 — 3포맷 동일 (`on_missing`)
+
+`render_template(context, on_missing=...)` 은 **context에 없는 키**를 3포맷 동일하게 처리합니다:
+
+- `"blank"`(기본): 빈 문자열로 — 출력에 `{{key}}` 리터럴을 남기지 않음
+- `"leave"`: `{{key}}` 를 그대로 둠
+- `"error"`: 누락 키가 있으면 `ValueError` (문서 미변경)
+
+반환값은 `{"used": [...], "missing": [...]}` 로, 어떤 키가 치환됐고 누락됐는지 알려줍니다 (`fill_form` 의 `filled`/`not_found` 와 대칭).
+
+### save() 의 byte 안정성 — 포맷별 차이
+
+- **HWPX**: 수정한 파트만 재직렬화하고 나머지는 원본 bytes 그대로 복사 → **편집 안 한 부분은 byte-identical** (최소 diff). 원본 서식/메타 보존에 유리.
+- **DOCX / PPTX**: `python-docx` / `python-pptx` 가 저장 시 패키지 전체를 재작성 → byte-identical 보장 안 됨 (내용은 보존되나 XML 직렬화가 달라질 수 있음).
+
+원본과의 최소 diff가 중요한 워크플로우(버전 관리·서명 등)에서는 이 차이를 고려하세요.
+
 ## 내장된 버그 회피 / 백엔드 선택
 
 | 포맷 | 문제 | 어댑터의 처리 |

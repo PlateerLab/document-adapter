@@ -341,7 +341,14 @@ class DocumentAdapter(ABC):
     def _open(self) -> None: ...
 
     @abstractmethod
-    def save(self, path: Path | str | None = None) -> Path: ...
+    def save(self, path: Path | str | None = None) -> Path:
+        """문서를 저장하고 경로를 반환.
+
+        byte 안정성은 포맷별로 다르다: HWPX 는 수정 안 한 파트를 byte-identical
+        하게 보존하지만, DOCX/PPTX 는 python-docx/pptx 가 패키지 전체를
+        재작성한다(내용 보존, byte-identical 보장 없음). README 참조.
+        """
+        ...
 
     def close(self) -> None:
         """일부 포맷(HWPX)은 명시적 close 필요."""
@@ -590,9 +597,12 @@ class DocumentAdapter(ABC):
             # 더 치명적이라 보수적 default. 예시값이 있는 양식에서 값 셀을 덮어쓰려면
             # direction="right"/"below" 로 명시.)
             other_label_keys = set(label_index.keys()) - {key}
-            ncols = tables_by_idx[t_idx].cols if t_idx in tables_by_idx else c + cs + 1
+            tinfo = tables_by_idx.get(t_idx)
+            ncols = tinfo.cols if tinfo is not None else c + cs + 1
+            nrows = tinfo.rows if tinfo is not None else r + rs + 1
             action, coord, old = self._fill_one_cell(
-                t_idx, r, c, rs, cs, str(value), direction, other_label_keys, ncols
+                t_idx, r, c, rs, cs, str(value), direction,
+                other_label_keys, ncols, nrows
             )
             if coord is None:
                 # 탐색 실패 — fallback 으로 same 에 append_to_cell 권할지 고민했지만
@@ -658,6 +668,36 @@ class DocumentAdapter(ABC):
             tc += max(1, cell.span[1])
         return best[1] if best else None
 
+    def _scan_value_cell_below(
+        self,
+        t_idx: int,
+        c: int,
+        start_r: int,
+        nrows: int,
+    ) -> int | None:
+        """라벨 아래로 다음 라벨 전까지 스캔해 **가장 높은(height) 빈 anchor 값칸**의
+        행을 반환. 라벨과 값 영역 사이의 얇은 스페이서 행에 값이 들어가는 것을
+        방지한다 (right 스캔의 세로 대칭). non-anchor 슬롯은 건너뛰고, 비어있지
+        않은 anchor 에서 멈춘다. nrows 로 bound. 없으면 None.
+        """
+        best: tuple[float, int] | None = None
+        tr = start_r
+        while tr < nrows:
+            try:
+                cell = self.get_cell(t_idx, tr, c)
+            except (IndexError, ValueError):
+                break
+            if not cell.is_anchor:
+                tr += 1
+                continue
+            if (cell.text or "").strip():
+                break
+            height = cell.height_cm if cell.height_cm is not None else 0.0
+            if best is None or height > best[0]:
+                best = (height, tr)
+            tr += max(1, cell.span[0])
+        return best[1] if best else None
+
     def _fill_one_cell(
         self,
         t_idx: int,
@@ -669,6 +709,7 @@ class DocumentAdapter(ABC):
         direction: str,
         other_label_keys: set[str],
         ncols: int,
+        nrows: int,
     ) -> tuple[str, tuple[int, int, int] | None, str]:
         """한 라벨에 대해 direction 에 따라 값 셀을 찾아 값을 쓴다.
 
@@ -701,7 +742,15 @@ class DocumentAdapter(ABC):
                 else:
                     target_r, target_c = r, c + colspan
             elif mode == "below":
-                target_r, target_c = r + rowspan, c
+                if direction == "auto":
+                    # 얇은 스페이서 행을 건너뛰고 적정한 빈 값칸을 고른다(right 대칭).
+                    tr = self._scan_value_cell_below(
+                        t_idx, c, r + rowspan, nrows)
+                    if tr is None:
+                        continue
+                    target_r, target_c = tr, c
+                else:
+                    target_r, target_c = r + rowspan, c
             else:  # same
                 target_r, target_c = r, c
 
