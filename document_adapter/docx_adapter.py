@@ -186,11 +186,19 @@ class DocxAdapter(DocumentAdapter):
         keys: set[str] = set()
         for p in self._doc.paragraphs:
             keys.update(TAG_PATTERN.findall(p.text))
-        # 모든 (중첩 포함) 표 셀에서 수집
+        # 모든 (중첩 포함) 표 셀에서 수집. row.cells 는 병합표에서 깨지므로
+        # _build_grid 의 anchor 셀만 순회한다(get_tables 와 동일 견고 경로).
         for _, tbl, _ in self._iter_tables():
-            for row in tbl.rows:
-                for cell in row.cells:
-                    keys.update(TAG_PATTERN.findall(cell.text))
+            grid, _, _ = _build_grid(tbl)
+            seen: set[int] = set()
+            for info in grid.values():
+                if not info["is_anchor"]:
+                    continue
+                tc_id = id(info["cell"]._tc)
+                if tc_id in seen:
+                    continue
+                seen.add(tc_id)
+                keys.update(TAG_PATTERN.findall(info["cell"].text))
         return sorted(keys)
 
     def get_tables(self, min_rows: int = 1, min_cols: int = 1,
