@@ -282,18 +282,25 @@ class HwpxAdapter(DocumentAdapter):
 
     # ---- 편집 ----
 
-    def render_template(self, context: dict[str, Any]) -> None:
+    def render_template(self, context: dict[str, Any], *,
+                        on_missing: str = "blank") -> dict[str, list[str]]:
         """섹션의 모든 <hp:p> 에서 {{key}} 치환. paragraph 단위로 처리해
         run 포맷은 보존한다 (첫 <hp:t>에 치환 결과를 쓰고 나머지는 비움).
+        누락 키 처리는 on_missing 정책을 따른다 (base 참조).
         """
+        report = self._render_report(self.get_placeholders(), context, on_missing)
+
+        def repl(m: "re.Match[str]") -> str:
+            key = m.group(1)
+            if key in context:
+                return str(context[key])
+            return "" if on_missing == "blank" else m.group(0)
+
         def substitute(p: etree._Element) -> bool:
             text = paragraph_text(p)
             if not TAG_PATTERN.search(text):
                 return False
-            new_text = TAG_PATTERN.sub(
-                lambda m: str(context.get(m.group(1), m.group(0))), text
-            )
-            set_paragraph_text(p, new_text)
+            set_paragraph_text(p, TAG_PATTERN.sub(repl, text))
             return True
 
         for section_name, root in self._pkg.iter_section_roots():
@@ -303,6 +310,7 @@ class HwpxAdapter(DocumentAdapter):
                     changed = True
             if changed:
                 self._pkg.mark_dirty(section_name)
+        return report
 
     def set_cell(
         self,

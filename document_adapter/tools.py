@@ -51,7 +51,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "render_template",
         "description": (
             "문서의 {{key}} placeholder를 context의 값으로 치환해 새 파일로 저장한다. "
-            "DOCX는 docxtpl(Jinja2 loop/if 지원), PPTX/HWPX는 단순 {{key}} 치환."
+            "DOCX는 docxtpl(Jinja2 loop/if 지원), PPTX/HWPX는 단순 {{key}} 치환. "
+            "결과로 rendered_keys / missing_keys(context에 없던 키)를 반환. "
+            "on_missing 으로 누락 키 처리 방식을 3포맷 동일하게 제어."
         ),
         "input_schema": {
             "type": "object",
@@ -65,6 +67,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "output_path": {
                     "type": "string",
                     "description": "결과 저장 경로 (생략 시 원본 옆에 _rendered 붙여 저장)",
+                },
+                "on_missing": {
+                    "type": "string",
+                    "enum": ["blank", "leave", "error"],
+                    "description": (
+                        "context에 없는 키 처리: blank(기본,빈칸)/leave({{key}} 유지)/"
+                        "error(예외). 3포맷 동일 동작."
+                    ),
                 },
             },
             "required": ["path", "context"],
@@ -362,30 +372,25 @@ def inspect_document(path: str, min_rows: int = 1, min_cols: int = 1) -> dict[st
 
 
 def render_template(path: str, context: dict[str, Any],
-                    output_path: str | None = None) -> dict[str, Any]:
+                    output_path: str | None = None,
+                    on_missing: str = "blank") -> dict[str, Any]:
     out = _resolve_output(path, output_path, "_rendered")
     shutil.copy2(path, out)
 
     doc = load(out)
     try:
         before = doc.get_placeholders()
-        doc.render_template(context)
+        report = doc.render_template(context, on_missing=on_missing)
         doc.save()
     finally:
         doc.close()
 
-    # 검증 재로드
-    doc2 = load(out)
-    try:
-        after = doc2.get_placeholders()
-    finally:
-        doc2.close()
-
     return {
         "output_path": str(out),
         "placeholders_before": before,
-        "placeholders_after": after,
-        "rendered_count": len(before) - len(after),
+        "rendered_keys": report["used"],
+        "missing_keys": report["missing"],
+        "rendered_count": len(report["used"]),
     }
 
 

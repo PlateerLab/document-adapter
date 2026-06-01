@@ -301,15 +301,25 @@ class DocxAdapter(DocumentAdapter):
         )
 
     # ---- editing ----
-    def render_template(self, context: dict[str, Any]) -> None:
-        """docxtpl 기반 Jinja2 렌더. 참고:
+    def render_template(self, context: dict[str, Any], *,
+                        on_missing: str = "blank") -> dict[str, list[str]]:
+        """docxtpl 기반 Jinja2 렌더. 누락 키는 on_missing 정책(base 참조).
         - `{%tr for row in rows %}` / `{%tr endfor %}`는 **각각 별도 행**에 두어야 함
         - 같은 행에 두면 `<w:tr>` 전체가 `{% for %}`로 교체되어 endfor 손실
         """
+        report = self._render_report(self.get_placeholders(), context, on_missing)
         tpl = DocxTemplate(self.path)
-        tpl.render(context)
+        if on_missing == "leave":
+            import jinja2
+            env = jinja2.Environment(undefined=jinja2.DebugUndefined,
+                                     autoescape=True)
+            tpl.render(context, jinja_env=env)
+        else:
+            # blank: docxtpl 기본(Jinja Undefined→""). error: 위에서 이미 raise.
+            tpl.render(context)
         tpl.save(self.path)
         self._doc = Document(str(self.path))
+        return report
 
     def set_cell(
         self,

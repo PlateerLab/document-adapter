@@ -375,6 +375,87 @@ def test_docx_irregular_horizontal_merge_loads(tmp_path: Path) -> None:
     assert cell.span[1] == 4      # gridSpan=4 → colspan 4 (가로병합 인식)
 
 
+def _make_template(path: Path, fmt: str) -> None:
+    """[{{name}}|{{missing}}] 한 줄 템플릿을 fmt 포맷으로 생성."""
+    txt = "[{{name}}|{{missing}}]"
+    if fmt == "docx":
+        from docx import Document
+        d = Document()
+        d.add_paragraph(txt)
+        d.save(str(path))
+    elif fmt == "pptx":
+        from pptx import Presentation
+        from pptx.util import Inches
+        pr = Presentation()
+        pr.slide_width = Inches(10)
+        pr.slide_height = Inches(7.5)
+        s = pr.slides.add_slide(pr.slide_layouts[6])
+        s.shapes.add_textbox(Inches(1), Inches(1), Inches(8),
+                             Inches(1)).text_frame.text = txt
+        pr.save(str(path))
+    else:
+        from hwpx.document import HwpxDocument
+        d2 = HwpxDocument.new()
+        d2.add_paragraph(txt)
+        d2.save_to_path(path)
+
+
+def _rendered_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as z:
+        out = []
+        for n in z.namelist():
+            if not n.endswith(".xml"):
+                continue
+            try:
+                root = etree.fromstring(z.read(n))
+            except etree.XMLSyntaxError:
+                continue
+            for t in root.iter():
+                if t.text and "[" in t.text:
+                    out.append(t.text)
+        return " ".join(out)
+
+
+@pytest.mark.parametrize("fmt", ["docx", "pptx", "hwpx"])
+def test_render_template_missing_key_blanks_consistently(tmp_path: Path,
+                                                         fmt: str) -> None:
+    """3포맷 모두 누락 키를 빈칸으로(기본) — {{missing}} 리터럴이 출력에 남지 않음.
+
+    회귀: 이전엔 pptx/hwpx 가 {{missing}} 을 그대로 노출(docx 는 빈칸) — 불일치.
+    """
+    src = tmp_path / f"t.{fmt}"
+    _make_template(src, fmt)
+    ad = load(src)
+    report = ad.render_template({"name": "홍길동"})   # 기본 on_missing="blank"
+    ad.save(src)
+    ad.close()
+    assert report["used"] == ["name"]
+    assert report["missing"] == ["missing"]
+    text = _rendered_text(src)
+    assert "홍길동" in text
+    assert "{{" not in text   # 미완성 플레이스홀더 노출 없음
+
+
+@pytest.mark.parametrize("fmt", ["docx", "pptx", "hwpx"])
+def test_render_template_on_missing_modes(tmp_path: Path, fmt: str) -> None:
+    """on_missing leave 는 {{key}} 유지, error 는 ValueError."""
+    src = tmp_path / f"t.{fmt}"
+    _make_template(src, fmt)
+    ad = load(src)
+    ad.render_template({"name": "홍길동"}, on_missing="leave")
+    ad.save(src)
+    leave_text = _rendered_text(src)
+    ad.close()
+    assert "missing" in leave_text and "}}" in leave_text
+
+    src2 = tmp_path / f"e.{fmt}"
+    _make_template(src2, fmt)
+    ad2 = load(src2)
+    with pytest.raises(ValueError):
+        ad2.render_template({"name": "x"}, on_missing="error")
+    ad2.close()
+
+
 def test_overflow_risk_helper() -> None:
     """폭 추정 기반 오버플로 위험 판정: 좁은 칸=위험, 넓은 칸=안전, 미상=보류."""
     from document_adapter.base import _overflow_risk

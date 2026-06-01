@@ -342,22 +342,30 @@ class PptxAdapter(DocumentAdapter):
         )
 
     # ---- editing ----
-    def render_template(self, context: dict[str, Any]) -> None:
+    def render_template(self, context: dict[str, Any], *,
+                        on_missing: str = "blank") -> dict[str, list[str]]:
         """paragraph 단위로 {{key}}를 치환. run이 쪼개진 경우를 처리하기 위해
-        paragraph 전체 텍스트를 재조립 후 첫 run에 담는다 (서식 일부 손실 가능)."""
+        paragraph 전체 텍스트를 재조립 후 첫 run에 담는다 (서식 일부 손실 가능).
+        누락 키 처리는 on_missing 정책을 따른다 (base 참조)."""
+        report = self._render_report(self.get_placeholders(), context, on_missing)
+
+        def repl(m: "re.Match[str]") -> str:
+            key = m.group(1)
+            if key in context:
+                return str(context[key])
+            return "" if on_missing == "blank" else m.group(0)
+
         for tf in self._iter_text_frames():
             for para in tf.paragraphs:
                 full_text = "".join(run.text for run in para.runs)
                 if not TAG_PATTERN.search(full_text):
                     continue
-                rendered = TAG_PATTERN.sub(
-                    lambda m: str(context.get(m.group(1), m.group(0))),
-                    full_text,
-                )
+                rendered = TAG_PATTERN.sub(repl, full_text)
                 if para.runs:
                     para.runs[0].text = rendered
                     for run in para.runs[1:]:
                         run.text = ""
+        return report
 
     def _get_table(self, table_index: int):
         for g_idx, _, table in self._iter_tables():
