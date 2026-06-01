@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import re
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,44 @@ def _rowheight_to_cm(points: float | None) -> float | None:
     if points is None:
         return None
     return round(points / 72 * 2.54, 1)
+
+
+def _cell_text(v: Any) -> str:
+    """셀 값을 사람이 읽는 텍스트로. 날짜는 시간 0 이면 날짜만 표시."""
+    if v is None:
+        return ""
+    if isinstance(v, datetime.datetime):
+        if (v.hour, v.minute, v.second, v.microsecond) == (0, 0, 0, 0):
+            return v.date().isoformat()
+        return v.isoformat(sep=" ")
+    if isinstance(v, datetime.date):
+        return v.isoformat()
+    return str(v)
+
+
+# 깔끔한 숫자 문자열만 매칭 (정수 / 천단위콤마 / 소수). 전화·ID·날짜(대시) 제외.
+_NUM_RE = re.compile(
+    r"^-?\d+$|^-?\d{1,3}(?:,\d{3})+$|^-?\d+\.\d+$|^-?\d{1,3}(?:,\d{3})+\.\d+$"
+)
+
+
+def _maybe_number(s: str) -> int | float | None:
+    """금액 등 깔끔한 숫자 문자열을 int/float 로. 아니면 None(문자 유지).
+
+    선행 0 정수(우편번호·사번 등)와 대시 포함(전화·날짜)은 문자로 둔다.
+    """
+    t = s.strip()
+    if not _NUM_RE.match(t):
+        return None
+    plain = t.replace(",", "")
+    intpart = plain.lstrip("-").split(".")[0]
+    if len(intpart) > 1 and intpart.startswith("0"):
+        return None
+    try:
+        f = float(plain)
+        return int(f) if "." not in plain else f
+    except ValueError:
+        return None
 
 
 class XlsxAdapter(DocumentAdapter):
@@ -110,7 +149,7 @@ class XlsxAdapter(DocumentAdapter):
                     if (r, c) in covered:
                         continue
                     v = ws.cell(row=r + 1, column=c + 1).value
-                    preview[r][c] = ("" if v is None else str(v))[:max_cell_len]
+                    preview[r][c] = _cell_text(v)[:max_cell_len]
             merges = [MergeInfo(anchor=a, span=s) for a, s in anchors.items()]
             col_widths = [
                 _colwidth_to_cm(ws.column_dimensions[get_column_letter(c + 1)].width)
@@ -143,7 +182,7 @@ class XlsxAdapter(DocumentAdapter):
             is_anchor, anchor = True, (row, col)
             span = anchors.get((row, col), (1, 1))
             v = ws.cell(row=row + 1, column=col + 1).value
-        text = "" if v is None else str(v)
+        text = _cell_text(v)
         width_cm = _colwidth_to_cm(
             ws.column_dimensions[get_column_letter(anchor[1] + 1)].width)
         height_cm = _rowheight_to_cm(ws.row_dimensions[anchor[0] + 1].height)
@@ -193,8 +232,11 @@ class XlsxAdapter(DocumentAdapter):
                 f"cell ({row},{col}) out of bounds ({rows}x{cols})")
         wr, wc = self._resolve_writable(ws, row, col, allow_merge_redirect)
         cell = ws.cell(row=wr + 1, column=wc + 1)
-        old = "" if cell.value is None else str(cell.value)
-        cell.value = value
+        old = _cell_text(cell.value)
+        # 깔끔한 숫자(금액 등)는 숫자로 기록해 Excel 수식/합계가 살아있게.
+        # 전화·ID·날짜 등은 _maybe_number 가 None → 문자 유지.
+        num = _maybe_number(value)
+        cell.value = num if num is not None else value
         return old
 
     def append_to_cell(self, table_index: int, row: int, col: int, value: str,

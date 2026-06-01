@@ -19,6 +19,9 @@ inspect 가 병합 docx 에서 깨지던 버그와 머리말/꼬리말·노트 �
   base 구현으로 자동 동작. 병합 셀 anchor/span 인지(비-anchor 쓰기는
   `MergedCellWriteError`), 셀 크기(cm) 메타 제공. `load("*.xlsx")` 자동 디스패치.
   MCP 도구는 확장자 디스패치로 그대로 동작.
+  - **셀 타입 처리**: 날짜는 시간 없이 표시(`2026-06-01`), `set_cell` 은 깔끔한
+    숫자(금액 등)를 숫자형으로 기록해 Excel 수식/합계를 유지하되, 전화·사번·
+    우편번호(대시·선행 0)는 문자로 보존. 실제 xlsx 파일 5종(다중 시트 포함)으로 검증.
 
 ### Fixed
 - **docx `get_placeholders` 병합표 크래시**: `row.cells` 가 가로+세로 병합 docx 에서
