@@ -282,6 +282,12 @@ def _make_hwpx_with_form_controls(path: Path) -> None:
     ed = etree.SubElement(run, f"{{{HP}}}edit")
     ed.set("name", "ED1")
     etree.SubElement(ed, f"{{{HP}}}text")
+    cbx = etree.SubElement(run, f"{{{HP}}}comboBox")
+    cbx.set("name", "CBX1")
+    for opt in ("서울", "부산"):
+        li = etree.SubElement(cbx, f"{{{HP}}}listItem")
+        li.set("displayText", opt)
+        li.set("value", opt)
     raw["Contents/section0.xml"] = etree.tostring(root, xml_declaration=True,
                                                   encoding="UTF-8")
     with zipfile.ZipFile(path, "w") as zout:
@@ -300,8 +306,12 @@ def test_form_controls_get_and_set(tmp_path: Path) -> None:
     assert "ED1" in ctrls and ctrls["ED1"]["kind"] == "edit"
     assert ctrls["CB1"]["checked"] is False
 
+    assert ctrls["CBX1"]["kind"] == "comboBox"
+    assert ctrls["CBX1"]["items"] == ["서울", "부산"]   # 드롭다운 옵션 노출
+
     ad.set_form_control("CB1", "Y")
     ad.set_form_control("ED1", "홍길동")
+    ad.set_form_control("CBX1", "부산")
     ad.save(src)
     ad.close()
 
@@ -310,6 +320,7 @@ def test_form_controls_get_and_set(tmp_path: Path) -> None:
     ad2.close()
     assert after["CB1"]["checked"] is True
     assert after["ED1"]["value"] == "홍길동"
+    assert after["CBX1"]["value"] == "부산"          # 콤보 현재값 영속
 
 
 def test_form_controls_unsupported_format(tmp_path: Path) -> None:

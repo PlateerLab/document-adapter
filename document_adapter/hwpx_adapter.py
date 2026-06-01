@@ -25,6 +25,7 @@ from document_adapter.hwpx_core import (
     HP_TC,
     HP_TR,
     HP_FORM_TEXT,
+    HP_LIST_ITEM,
     FORM_CONTROL_TAGS,
     HwpxPackage,
     cell_paragraph_texts,
@@ -435,8 +436,13 @@ class HwpxAdapter(DocumentAdapter):
                 elif kind == "edit":
                     te = el.find(HP_FORM_TEXT)
                     info["value"] = (te.text or "") if te is not None else ""
-                else:  # combo / list
-                    info["value"] = el.get("value", "")
+                else:  # comboBox / listBox: 현재값은 <text> 자식, 옵션은 listItem
+                    te = el.find(HP_FORM_TEXT)
+                    info["value"] = (te.text or "") if te is not None else ""
+                    info["items"] = [
+                        li.get("displayText", "")
+                        for li in el.findall(HP_LIST_ITEM)
+                    ]
                 out.append(info)
         return out
 
@@ -453,13 +459,14 @@ class HwpxAdapter(DocumentAdapter):
                     old = el.get("value", "")
                     checked = value is True or str(value).strip().lower() in truthy
                     el.set("value", "CHECKED" if checked else "UNCHECKED")
-                elif kind == "edit":
+                elif kind in ("edit", "comboBox", "listBox"):
+                    # 현재 값은 <text> 자식에 기록 (editable combo 포함)
                     te = el.find(HP_FORM_TEXT)
                     if te is None:
                         te = etree.SubElement(el, HP_FORM_TEXT)
                     old = te.text or ""
                     te.text = str(value)
-                else:  # combo / list
+                else:
                     old = el.get("value", "")
                     el.set("value", str(value))
                 self._pkg.mark_dirty(section_name)
