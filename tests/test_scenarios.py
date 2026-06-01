@@ -540,6 +540,40 @@ def test_xlsx_inspect_fill_render_roundtrip(tmp_path: Path) -> None:
     ad2.close()
 
 
+def test_xlsx_value_typing(tmp_path: Path) -> None:
+    """xlsx 셀 타입 처리: 날짜는 시간 제거, 금액은 숫자 보존, 전화/우편번호는 문자.
+
+    회귀: 초기 구현은 set_cell 이 항상 문자로 써서 금액 셀이 텍스트가 되고
+    (수식·합계 깨짐), 날짜를 '...00:00:00' 으로 표시했다.
+    """
+    import datetime
+    from openpyxl import Workbook, load_workbook
+
+    src = tmp_path / "t.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "날짜"
+    ws["B1"] = datetime.date(2026, 6, 1)
+    ws["A2"] = "금액"
+    ws["A3"] = "전화"
+    ws["A4"] = "우편"
+    wb.save(str(src))
+
+    ad = load(src)
+    assert ad.get_cell(0, 0, 1).text == "2026-06-01"   # 시간 없음
+    ad.set_cell(0, 1, 1, "3,000,000")    # 금액 → 숫자
+    ad.set_cell(0, 2, 1, "010-1234-5678")  # 전화 → 문자
+    ad.set_cell(0, 3, 1, "00100")          # 우편(선행0) → 문자
+    ad.save(src)
+    ad.close()
+
+    wb2 = load_workbook(str(src))
+    assert wb2.active["B2"].value == 3000000
+    assert isinstance(wb2.active["B2"].value, int)
+    assert wb2.active["B3"].value == "010-1234-5678"
+    assert wb2.active["B4"].value == "00100"   # 선행 0 보존
+
+
 def test_xlsx_merged_cell_write_rejected(tmp_path: Path) -> None:
     """병합 non-anchor 좌표 쓰기는 MergedCellWriteError (allow_merge_redirect로 우회)."""
     from document_adapter.base import MergedCellWriteError
