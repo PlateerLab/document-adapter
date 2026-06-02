@@ -31,7 +31,7 @@
 
 ## 라이선스 (상용 사용 가능)
 
-- 본 프로젝트: **MIT License**
+- 본 프로젝트: **Apache License 2.0** — 재배포·파생물 배포 시 저작권·`NOTICE` 출처 표시 유지 필요(라이선스 §4). 상용 사용 가능, 특허 사용권 포함.
 - 런타임 의존성(`python-docx`, `docxtpl`, `python-pptx`, `lxml`, `mcp`): 전부 **허용형 OSS** (MIT/BSD/Apache-2.0/LGPL-2.1). 상용·내부 서비스에 그대로 포함 가능.
 - v0.3 이하에서 사용했던 `python-hwpx` (Non-Commercial License) 는 v0.4.0부터 **dev 환경(테스트 fixture 생성) 전용**으로 이동. HWPX 편집은 자체 `hwpx_core` 모듈이 수행합니다.
 
@@ -348,7 +348,10 @@ examples/
 
 ## 라이선스
 
-MIT
+**Apache License 2.0** — [`LICENSE`](LICENSE) / [`NOTICE`](NOTICE) 참조.
+이 소프트웨어나 그 파생물을 **재배포**할 때는 저작권·라이선스 고지와 `NOTICE`
+파일의 출처 표시를 유지해야 합니다(라이선스 §4). 단순히 의존성으로 사용만 하는
+경우엔 별도 표시 의무가 없습니다(표준 OSS 공통).
 
 ## Credits
 

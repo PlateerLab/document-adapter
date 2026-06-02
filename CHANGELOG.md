@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-06-02
+
+### Changed
+- **라이선스를 MIT → Apache License 2.0 으로 변경.** 재배포·파생물 배포 시
+  저작권·`NOTICE` 출처 표시 유지를 명시적으로 요구(라이선스 §4)하고, 특허
+  사용권을 포함한다. `LICENSE`(Apache 2.0 전문)·`NOTICE`·pyproject classifier
+  갱신. (이전 0.x 릴리스는 MIT 로 배포된 상태 그대로 유지 — 0.12.0 부터 Apache-2.0.)
+
 ## [0.11.1] — 2026-06-02
 
 ### Docs
