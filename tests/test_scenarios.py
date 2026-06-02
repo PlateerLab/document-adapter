@@ -574,6 +574,54 @@ def test_xlsx_value_typing(tmp_path: Path) -> None:
     assert wb2.active["B4"].value == "00100"   # 선행 0 보존
 
 
+def test_xlsx_complex_merges_formulas_roundtrip(tmp_path: Path) -> None:
+    """복잡 xlsx: 가로+세로 병합, 수식, 통화서식, 다중시트가 편집 후에도 보존.
+
+    set_cell 편집 시 다른 셀의 수식(=B*C, =SUM)·number_format·병합 영역·
+    다른 시트가 그대로 유지돼야 한다 (openpyxl round-trip 정합성).
+    """
+    from openpyxl import Workbook, load_workbook
+
+    src = tmp_path / "quote.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "견적서"
+    ws["A1"] = "견적서"
+    ws.merge_cells("A1:E1")               # 가로 병합 제목
+    ws["A2"] = "공급자"
+    ws.merge_cells("A2:A4")               # 세로 병합 섹션
+    for r, (nm, qty, price) in enumerate(
+            [("노트북", 2, 1500000), ("모니터", 3, 300000)], start=7):
+        ws.cell(row=r, column=1, value=nm)
+        ws.cell(row=r, column=2, value=qty)
+        ws.cell(row=r, column=3, value=price)
+        fcell = ws.cell(row=r, column=4, value=f"=B{r}*C{r}")
+        fcell.number_format = '#,##0"원"'
+    ws["D10"] = "=SUM(D7:D8)"
+    wb.create_sheet("거래내역")["B1"] = 42
+    wb.save(str(src))
+
+    ad = load(src)
+    t = ad.get_tables()[0]
+    merges = {(m.anchor, m.span) for m in t.merges}
+    assert ((0, 0), (1, 5)) in merges      # 가로 병합 제목
+    assert ((1, 0), (3, 1)) in merges      # 세로 병합 섹션
+    assert ad.get_cell(0, 0, 2).is_anchor is False     # 병합 non-anchor
+    assert ad.get_cell(0, 6, 3).text == "=B7*C7"       # 수식 노출
+    ad.set_cell(0, 6, 1, "10")             # 노트북 수량 편집
+    ad.save(src)
+    ad.close()
+
+    wb2 = load_workbook(str(src))
+    w = wb2["견적서"]
+    assert w["B7"].value == 10                          # 숫자 보존
+    assert w["D7"].value == "=B7*C7"                    # 수식 보존
+    assert w["D10"].value == "=SUM(D7:D8)"
+    assert w["D7"].number_format == '#,##0"원"'         # 서식 보존
+    assert "A1:E1" in {str(m) for m in w.merged_cells.ranges}
+    assert wb2["거래내역"]["B1"].value == 42            # 다른 시트 보존
+
+
 def test_xlsx_merged_cell_write_rejected(tmp_path: Path) -> None:
     """병합 non-anchor 좌표 쓰기는 MergedCellWriteError (allow_merge_redirect로 우회)."""
     from document_adapter.base import MergedCellWriteError
