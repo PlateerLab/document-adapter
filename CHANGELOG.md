@@ -7,6 +7,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-02
+
+리서치 기반 궁극 로드맵의 **신뢰성 해자 + 생성급 parity 1차** 를 구현.
+
 ### Added
 - **PPTX/HWPX/XLSX 조건·표현식·필터** — 단순 `{{key}}` 치환에 더해
   `{% if %}` 조건, `{{ price * qty }}` 표현식, `{{ x|length }}` 필터를 지원
