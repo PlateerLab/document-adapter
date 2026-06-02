@@ -540,6 +540,38 @@ def test_xlsx_inspect_fill_render_roundtrip(tmp_path: Path) -> None:
     ad2.close()
 
 
+def test_xlsx_formula_cached_value(tmp_path: Path) -> None:
+    """수식 셀: 캐시된 계산값이 있으면 그 값을, 없으면 수식 문자열을 표시."""
+    from openpyxl import Workbook
+
+    # (1) openpyxl 생성 — 캐시 없음 → 수식 문자열 폴백
+    nocache = tmp_path / "nocache.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = 10
+    ws["A2"] = 20
+    ws["A3"] = "=A1+A2"
+    wb.save(str(nocache))
+    ad = load(nocache)
+    assert ad.get_cell(0, 2, 0).text == "=A1+A2"
+    ad.close()
+
+    # (2) Excel 저장본 시뮬레이션 — <v> 캐시 주입 → 계산값 표시
+    work = tmp_path / "x"
+    with zipfile.ZipFile(nocache) as z:
+        z.extractall(work)
+    sx = work / "xl" / "worksheets" / "sheet1.xml"
+    sx.write_text(sx.read_text().replace("<f>A1+A2</f>", "<f>A1+A2</f><v>30</v>"))
+    cached = tmp_path / "cached.xlsx"
+    with zipfile.ZipFile(cached, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in work.rglob("*"):
+            if f.is_file():
+                z.write(f, f.relative_to(work).as_posix())
+    ad2 = load(cached)
+    assert ad2.get_cell(0, 2, 0).text == "30"     # 수식 아닌 계산값
+    ad2.close()
+
+
 def test_xlsx_value_typing(tmp_path: Path) -> None:
     """xlsx 셀 타입 처리: 날짜는 시간 제거, 금액은 숫자 보존, 전화/우편번호는 문자.
 
