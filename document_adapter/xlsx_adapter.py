@@ -89,12 +89,37 @@ class XlsxAdapter(DocumentAdapter):
 
     def _open(self) -> None:
         self._wb = load_workbook(str(self.path))
+        # 수식의 *캐시된 계산값* 읽기용(data_only). Excel 이 저장한 파일에만 캐시가
+        # 있으므로 lazy 로 로드하고, 없거나 실패하면 False 로 표시.
+        self._values_wb: Any = None
 
     def save(self, path: Path | str | None = None) -> Path:
         target = Path(path) if path else self.path
         self._wb.save(str(target))
         self.path = target
         return target
+
+    def _cached_value(self, ws_title: str, row1: int, col1: int) -> Any:
+        """수식 셀의 캐시된 계산값(없으면 None). Excel 저장본에서만 존재."""
+        if self._values_wb is None:
+            try:
+                self._values_wb = load_workbook(str(self.path), data_only=True)
+            except Exception:
+                self._values_wb = False
+        if not self._values_wb:
+            return None
+        try:
+            return self._values_wb[ws_title].cell(row=row1, column=col1).value
+        except Exception:
+            return None
+
+    def _display_text(self, ws, row0: int, col0: int, raw: Any) -> str:
+        """표시 텍스트: 수식이고 캐시 계산값이 있으면 그 값을, 없으면 raw."""
+        if isinstance(raw, str) and raw.startswith("="):
+            cached = self._cached_value(ws.title, row0 + 1, col0 + 1)
+            if cached is not None:
+                return _cell_text(cached)
+        return _cell_text(raw)
 
     # ---- helpers ----
     def _ws(self, table_index: int):
@@ -149,7 +174,7 @@ class XlsxAdapter(DocumentAdapter):
                     if (r, c) in covered:
                         continue
                     v = ws.cell(row=r + 1, column=c + 1).value
-                    preview[r][c] = _cell_text(v)[:max_cell_len]
+                    preview[r][c] = self._display_text(ws, r, c, v)[:max_cell_len]
             merges = [MergeInfo(anchor=a, span=s) for a, s in anchors.items()]
             col_widths = [
                 _colwidth_to_cm(ws.column_dimensions[get_column_letter(c + 1)].width)
@@ -182,7 +207,7 @@ class XlsxAdapter(DocumentAdapter):
             is_anchor, anchor = True, (row, col)
             span = anchors.get((row, col), (1, 1))
             v = ws.cell(row=row + 1, column=col + 1).value
-        text = _cell_text(v)
+        text = self._display_text(ws, anchor[0], anchor[1], v)
         width_cm = _colwidth_to_cm(
             ws.column_dimensions[get_column_letter(anchor[1] + 1)].width)
         height_cm = _rowheight_to_cm(ws.row_dimensions[anchor[0] + 1].height)
