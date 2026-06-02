@@ -221,15 +221,20 @@ resp = client.messages.create(
 
 ## 노출되는 도구
 
+총 **12 개** 도구 (DOCX/PPTX/HWPX/XLSX 공통, 확장자로 자동 디스패치):
+
 | 도구 | 설명 |
 |---|---|
-| `inspect_document` | 문서 구조(placeholders, tables + `column_widths_cm`/`row_heights_cm`)를 JSON으로 반환. **항상 첫 호출로 사용** |
-| `render_template` | `{{key}}`를 context dict 값으로 치환해 새 파일 저장 |
+| `inspect_document` | 문서 구조(placeholders, tables + `column_widths_cm`/`row_heights_cm`)를 JSON으로 반환. 같은 라벨이 여러 곳이면 `duplicate_labels` 힌트도 포함. **항상 첫 호출로 사용** |
+| `render_template` | `{{key}}` 치환 + 조건/표현식(`{% if %}`, `{{ a*b }}`). `on_missing`(blank/leave/error)로 누락 키 처리, `rendered_keys`/`missing_keys` 반환 |
 | `get_cell` | 셀 전체 텍스트 + 병합/중첩 메타 + `width_cm`/`height_cm`/`char_count` 반환 |
 | `set_cell` | 특정 표의 `(row, col)` 셀 값 교체 (병합 anchor만) |
 | `append_to_cell` | 기존 텍스트 뒤에 값 덧붙임 (라벨 유지용, 예: `"성 명"` → `"성 명  홍길동"`) |
-| `fill_form` (v0.7+) | **라벨 이름**으로 일괄 채우기. 좌표 계산 없이 `{"접수번호": "...", "성명": "..."}` dict. dot-path 섹션 해소 지원 |
-| `append_row` | 표 끝에 새 행 추가 (DOCX/PPTX/HWPX 전부 지원, v0.5+) |
+| `fill_form` (v0.7+) | **라벨 이름**으로 일괄 채우기. 좌표 계산 없이 `{"접수번호": "...", "성명": "..."}` dict. dot-path 섹션 해소 + `overflow_warnings` |
+| `append_row` | 표 끝에 새 행 추가 (전 포맷, v0.5+) |
+| `get_shapes` / `set_shape_text` (v0.8, PPTX) | 표 외 shape(textbox/placeholder/도형) 텍스트 조회·편집 |
+| `get_form_controls` / `set_form_control` (v0.10, HWPX) | 폼 컨트롤(체크박스·라디오·에디트·콤보) 조회·설정 |
+| `diff_documents` (v0.11) | 두 문서(편집 전/후)를 셀 단위 비교 → 변경 셀 before/after + `overflow_risk`. **편집 후 검증용** |
 
 ### `inspect_document` 반환 예시 (v0.2+)
 
