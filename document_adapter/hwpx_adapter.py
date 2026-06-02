@@ -47,6 +47,7 @@ from .base import (
     NotImplementedForFormat,
     TableIndexError,
     TableSchema,
+    _has_template,
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -291,17 +292,11 @@ class HwpxAdapter(DocumentAdapter):
         """
         report = self._render_report(self.get_placeholders(), context, on_missing)
 
-        def repl(m: "re.Match[str]") -> str:
-            key = m.group(1)
-            if key in context:
-                return str(context[key])
-            return "" if on_missing == "blank" else m.group(0)
-
         def substitute(p: etree._Element) -> bool:
             text = paragraph_text(p)
-            if not TAG_PATTERN.search(text):
+            if not _has_template(text):
                 return False
-            set_paragraph_text(p, TAG_PATTERN.sub(repl, text))
+            set_paragraph_text(p, self._render_text_block(text, context, on_missing))
             return True
 
         for section_name, root in self._pkg.iter_section_roots():

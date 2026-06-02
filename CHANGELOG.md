@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 ## [Unreleased]
 
 ### Added
+- **PPTX/HWPX/XLSX 조건·표현식·필터** — 단순 `{{key}}` 치환에 더해
+  `{% if %}` 조건, `{{ price * qty }}` 표현식, `{{ x|length }}` 필터를 지원
+  (셀/문단 단위 jinja2, docx 의 Jinja 와 통일). 단순 `{{key}}` 는 기존 빠른
+  경로 보존. 구조적 표 행 루프(`{%tr%}`)는 여전히 DOCX 전용.
 - **`get_form_fields()` + inspect 중복 라벨 힌트** — 라벨 후보와 *중복(dot-path 필요)*
   여부를 미리 보여준다. `inspect_document` 응답에 `duplicate_labels` + 힌트를 추가해
   LLM 이 fill_form 전에 dot-path 필요를 인지(ambiguous 재시도 라운드 절감).
