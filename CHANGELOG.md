@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-06-02
+
+### Docs
+- README '노출되는 도구' 표를 **12 개 전부**로 갱신(누락됐던 get_shapes/
+  set_shape_text·get_form_controls/set_form_control·diff_documents 반영) +
+  render_template on_missing/조건식·inspect duplicate_labels 등 최신 반환 필드.
+  (코드 변경 없음 — PyPI 랜딩 페이지 정합성 패치.)
+
 ## [0.11.0] — 2026-06-02
 
 리서치 기반 궁극 로드맵의 **신뢰성 해자 + 생성급 parity 1차** 를 구현.
