@@ -26,6 +26,7 @@ from .base import (
     ShapeInfo,
     TableIndexError,
     TableSchema,
+    _has_template,
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -351,19 +352,12 @@ class PptxAdapter(DocumentAdapter):
         paragraph 전체 텍스트를 재조립 후 첫 run에 담는다 (서식 일부 손실 가능).
         누락 키 처리는 on_missing 정책을 따른다 (base 참조)."""
         report = self._render_report(self.get_placeholders(), context, on_missing)
-
-        def repl(m: "re.Match[str]") -> str:
-            key = m.group(1)
-            if key in context:
-                return str(context[key])
-            return "" if on_missing == "blank" else m.group(0)
-
         for tf in self._iter_text_frames():
             for para in tf.paragraphs:
                 full_text = "".join(run.text for run in para.runs)
-                if not TAG_PATTERN.search(full_text):
+                if not _has_template(full_text):
                     continue
-                rendered = TAG_PATTERN.sub(repl, full_text)
+                rendered = self._render_text_block(full_text, context, on_missing)
                 if para.runs:
                     para.runs[0].text = rendered
                     for run in para.runs[1:]:

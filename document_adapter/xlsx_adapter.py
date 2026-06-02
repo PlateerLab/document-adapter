@@ -24,6 +24,7 @@ from .base import (
     MergedCellWriteError,
     TableIndexError,
     TableSchema,
+    _has_template,
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -220,18 +221,12 @@ class XlsxAdapter(DocumentAdapter):
     def render_template(self, context: dict[str, Any], *,
                         on_missing: str = "blank") -> dict[str, list[str]]:
         report = self._render_report(self.get_placeholders(), context, on_missing)
-
-        def repl(m: "re.Match[str]") -> str:
-            key = m.group(1)
-            if key in context:
-                return str(context[key])
-            return "" if on_missing == "blank" else m.group(0)
-
         for ws in self._wb.worksheets:
             for row in ws.iter_rows():
                 for cell in row:
-                    if isinstance(cell.value, str) and TAG_PATTERN.search(cell.value):
-                        cell.value = TAG_PATTERN.sub(repl, cell.value)
+                    if isinstance(cell.value, str) and _has_template(cell.value):
+                        cell.value = self._render_text_block(
+                            cell.value, context, on_missing)
         return report
 
     def _resolve_writable(self, ws, row: int, col: int,

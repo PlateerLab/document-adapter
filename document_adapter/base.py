@@ -18,6 +18,20 @@ from typing import Any, Callable
 
 _LABEL_NORMALIZE_RE = re.compile(r"[\s·・／/\-:：()\[\]<>*#]+")
 
+# 단순 {{key}} 치환용 패턴 (loops/conditions 없는 빠른 경로).
+_TEMPLATE_TAG = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+# 단순 식별자 {{ name }} 이 *아닌* {{ ... }} (표현식·필터 등) 탐지.
+_EXPR_TAG = re.compile(r"\{\{(?!\s*\w+\s*\}\})")
+
+
+def _has_template(text: str) -> bool:
+    return "{{" in text or "{%" in text
+
+
+def _needs_jinja(text: str) -> bool:
+    """조건/루프({% %}) 또는 표현식({{ a*b }}) 이 있으면 jinja 가 필요."""
+    return "{%" in text or _EXPR_TAG.search(text) is not None
+
 
 def _estimate_text_width_cm(text: str) -> float:
     """10pt 기준 대략적인 글자폭 합(cm). 한글/CJK ~0.35cm, 그 외 ~0.20cm.
@@ -438,6 +452,36 @@ class DocumentAdapter(ABC):
         if on_missing == "error" and missing:
             raise ValueError(f"missing placeholders: {missing}")
         return {"used": used, "missing": missing}
+
+    def _render_text_block(self, text: str, context: dict[str, Any],
+                           on_missing: str) -> str:
+        """한 텍스트 블록(셀/문단) 렌더. pptx/hwpx/xlsx 공통.
+
+        - ``{% %}`` (조건/루프/표현식) 가 없으면 단순 {{key}} 치환(기존 동작 보존).
+        - 있으면 jinja2 로 렌더(조건·표현식·필터 지원) — docx(docxtpl)와 통일.
+        on_missing 은 jinja undefined 로 매핑(blank→"", leave→{{key}}, error→예외).
+        """
+        if not _needs_jinja(text):
+            def repl(m: "re.Match[str]") -> str:
+                key = m.group(1)
+                if key in context:
+                    return str(context[key])
+                return "" if on_missing == "blank" else m.group(0)
+            return _TEMPLATE_TAG.sub(repl, text)
+
+        import jinja2
+        undef = {
+            "blank": jinja2.Undefined,
+            "leave": jinja2.DebugUndefined,
+            "error": jinja2.StrictUndefined,
+        }[on_missing]
+        env = jinja2.Environment(undefined=undef, autoescape=False)
+        try:
+            return env.from_string(text).render(context)
+        except jinja2.TemplateSyntaxError:
+            return text   # 유효한 템플릿이 아니면 원본 유지
+        except jinja2.UndefinedError as e:
+            raise ValueError(str(e)) from e
 
     @abstractmethod
     def set_cell(self, table_index: int, row: int, col: int, value: str,

@@ -451,6 +451,69 @@ def test_render_template_missing_key_blanks_consistently(tmp_path: Path,
     assert "{{" not in text   # 미완성 플레이스홀더 노출 없음
 
 
+def _render_one(path: Path, fmt: str, text: str, context: dict) -> str:
+    """fmt 포맷 문서에 text 한 줄을 넣고 render 후 본문 텍스트를 추출."""
+    if fmt == "hwpx":
+        from hwpx.document import HwpxDocument
+        d = HwpxDocument.new()
+        d.add_paragraph(text)
+        d.save_to_path(path)
+    elif fmt == "pptx":
+        from pptx import Presentation
+        from pptx.util import Inches
+        pr = Presentation()
+        pr.slide_width = Inches(10)
+        pr.slide_height = Inches(7.5)
+        s = pr.slides.add_slide(pr.slide_layouts[6])
+        s.shapes.add_textbox(Inches(1), Inches(1), Inches(8),
+                             Inches(1)).text_frame.text = text
+        pr.save(str(path))
+    else:  # xlsx
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.active["A1"] = text
+        wb.save(str(path))
+    ad = load(path)
+    ad.render_template(context)
+    ad.save(path)
+    ad.close()
+    out = []
+    with zipfile.ZipFile(path) as z:
+        for n in z.namelist():
+            if not n.endswith(".xml"):
+                continue
+            try:
+                root = etree.fromstring(z.read(n))
+            except etree.XMLSyntaxError:
+                continue
+            for t in root.iter():
+                if t.text and "R:" in t.text:
+                    out.append(t.text)
+    return " ".join(out)
+
+
+@pytest.mark.parametrize("fmt", ["pptx", "hwpx", "xlsx"])
+def test_render_conditions_and_expressions(tmp_path: Path, fmt: str) -> None:
+    """pptx/hwpx/xlsx 도 조건({% if %})·표현식({{a*b}})·필터({{x|length}}) 지원
+    (docx 의 Jinja 와 통일). 단순 {{key}} 는 기존 동작 보존."""
+    # 조건 (참/거짓)
+    cond_true = _render_one(tmp_path / f"a.{fmt}", fmt,
+                            "R:{% if vip %}VIP{% endif %}", {"vip": True})
+    assert "R:VIP" in cond_true
+    cond_false = _render_one(tmp_path / f"b.{fmt}", fmt,
+                             "R:{% if vip %}VIP{% endif %}", {"vip": False})
+    assert "R:VIP" not in cond_false
+    # 표현식 + 필터
+    expr = _render_one(tmp_path / f"c.{fmt}", fmt,
+                       "R:{{ price * qty }}/{{ items|length }}",
+                       {"price": 1000, "qty": 3, "items": [1, 2, 3, 4]})
+    assert "R:3000/4" in expr
+    # 단순 {{key}} 보존
+    simple = _render_one(tmp_path / f"d.{fmt}", fmt, "R:{{name}}",
+                         {"name": "홍길동"})
+    assert "R:홍길동" in simple
+
+
 @pytest.mark.parametrize("fmt", ["docx", "pptx", "hwpx"])
 def test_render_template_on_missing_modes(tmp_path: Path, fmt: str) -> None:
     """on_missing leave 는 {{key}} 유지, error 는 ValueError."""
