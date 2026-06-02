@@ -235,6 +235,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "diff_documents",
+        "description": (
+            "두 문서(예: 원본 vs 편집본)를 셀 단위로 비교해 **무엇이 어디서 어떻게 "
+            "바뀌었는지** 반환. 편집/채우기 후 검증용 — 변경 셀의 before/after 와 "
+            "overflow_risk(값이 칸을 넘쳐 깨질 위험)를 함께 준다. 4 포맷 공통."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path_a": {"type": "string", "description": "이전/원본 경로"},
+                "path_b": {"type": "string", "description": "이후/편집본 경로"},
+            },
+            "required": ["path_a", "path_b"],
+        },
+    },
+    {
         "name": "get_form_controls",
         "description": (
             "**HWPX 전용**. 표가 아닌 폼 컨트롤(체크박스/라디오/콤보/에디트) 목록을 "
@@ -555,6 +571,11 @@ def set_form_control(path: str, name: str, value: Any,
     }
 
 
+def diff_documents(path_a: str, path_b: str) -> dict[str, Any]:
+    from document_adapter.diff import diff_documents as _diff
+    return _diff(path_a, path_b)
+
+
 def fill_form(path: str, data: dict[str, str],
               direction: str = "auto", strict: bool = False,
               output_path: str | None = None) -> dict[str, Any]:
@@ -587,6 +608,7 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "set_shape_text": set_shape_text,
     "get_form_controls": get_form_controls,
     "set_form_control": set_form_control,
+    "diff_documents": diff_documents,
 }
 
 
