@@ -714,6 +714,52 @@ def test_pptx_notes_placeholders_and_render(tmp_path: Path) -> None:
     assert any("확인됨" in n for n in notes)
 
 
+def test_diff_documents(tmp_path: Path) -> None:
+    """diff_documents: 편집 전/후 변경 셀을 before/after + overflow 로 반환."""
+    import shutil
+    from document_adapter.diff import diff_documents
+
+    orig = tmp_path / "orig.hwpx"
+    _make_form_hwpx(orig, [("성명", ""), ("부서", "")])
+
+    # 동일 문서끼리는 변경 0
+    same = diff_documents(orig, orig)
+    assert same["changed"] == 0
+
+    # 채운 뒤 diff
+    edited = tmp_path / "edited.hwpx"
+    shutil.copy2(orig, edited)
+    ad = load(edited)
+    ad.fill_form({"성명": "홍길동", "부서": "개발팀"})
+    ad.save(edited)
+    ad.close()
+
+    r = diff_documents(orig, edited)
+    assert r["changed"] == 2
+    by_cell = {(ch["row"], ch["col"]): ch for ch in r["changes"]}
+    assert by_cell[(0, 1)]["before"] == "" and by_cell[(0, 1)]["after"] == "홍길동"
+    assert by_cell[(1, 1)]["after"] == "개발팀"
+    assert all("overflow_risk" in ch for ch in r["changes"])
+
+
+def test_diff_documents_via_tool(tmp_path: Path) -> None:
+    """MCP call_tool 경로로 diff_documents 동작."""
+    import shutil
+    from document_adapter.tools import call_tool
+
+    orig = tmp_path / "o.hwpx"
+    _make_form_hwpx(orig, [("a", ""), ("b", "")])
+    edited = tmp_path / "e.hwpx"
+    shutil.copy2(orig, edited)
+    ad = load(edited)
+    ad.set_cell(0, 0, 1, "X")
+    ad.save(edited)
+    ad.close()
+    r = call_tool("diff_documents", {"path_a": str(orig), "path_b": str(edited)})
+    assert r["changed"] == 1
+    assert r["changes"][0]["after"] == "X"
+
+
 def test_get_cell_out_of_bounds_raises(tmp_path: Path) -> None:
     """경계를 벗어난 좌표는 CellOutOfBoundsError(IndexError 하위)."""
     from document_adapter.base import CellOutOfBoundsError

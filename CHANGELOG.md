@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+### Added
+- **`diff_documents(path_a, path_b)`** — 편집 전/후 문서를 셀 단위로 비교해 변경된
+  셀의 before/after 와 overflow_risk 를 반환하는 **검증 도구**(MCP 도구 → 총 12 개).
+  fill 후 원본과 diff 해 "무엇이 어디서 바뀌었고 깨짐 위험은 없나" 를 LLM 이 스스로
+  확인·자가교정할 수 있다. 4 포맷 공통.
+- **xlsx 수식 계산값**: 캐시된 계산값이 있으면 그 값을, 없으면 수식 문자열을 표시
+  (`data_only` lazy 폴백). 수식은 편집/저장 시 보존.
+
 ## [0.10.0] — 2026-06-01
 
 코드 감사로 포맷별(docx/pptx/xlsx) 격차를 점검해 **Excel 지원을 신규 추가**하고,
