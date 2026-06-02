@@ -714,6 +714,27 @@ def test_pptx_notes_placeholders_and_render(tmp_path: Path) -> None:
     assert any("확인됨" in n for n in notes)
 
 
+def test_get_form_fields_and_duplicate_hint(tmp_path: Path) -> None:
+    """get_form_fields 가 중복 라벨을 ambiguous 로 표시하고, inspect_document 가
+    duplicate_labels 힌트를 미리 제공해야 한다 (dot-path 재시도 절감)."""
+    from document_adapter.tools import call_tool
+
+    src = tmp_path / "dup.hwpx"
+    _make_form_hwpx(src, [("피해자정보", ""), ("금액", ""),
+                          ("지급정지", ""), ("금액", "")])
+    ad = load(src)
+    fields = {f["label"]: f for f in ad.get_form_fields()}
+    ad.close()
+    assert fields["금액"]["ambiguous"] is True
+    assert len(fields["금액"]["occurrences"]) == 2
+    assert fields["지급정지"]["ambiguous"] is False
+
+    r = call_tool("inspect_document", {"path": str(src)})
+    dups = {d["label"]: d for d in r.get("duplicate_labels", [])}
+    assert "금액" in dups and dups["금액"]["count"] == 2
+    assert "duplicate_labels_hint" in r
+
+
 def test_diff_documents(tmp_path: Path) -> None:
     """diff_documents: 편집 전/후 변경 셀을 before/after + overflow 로 반환."""
     import shutil

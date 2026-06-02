@@ -8,6 +8,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 ## [Unreleased]
 
 ### Added
+- **`get_form_fields()` + inspect 중복 라벨 힌트** — 라벨 후보와 *중복(dot-path 필요)*
+  여부를 미리 보여준다. `inspect_document` 응답에 `duplicate_labels` + 힌트를 추가해
+  LLM 이 fill_form 전에 dot-path 필요를 인지(ambiguous 재시도 라운드 절감).
 - **`diff_documents(path_a, path_b)`** — 편집 전/후 문서를 셀 단위로 비교해 변경된
   셀의 before/after 와 overflow_risk 를 반환하는 **검증 도구**(MCP 도구 → 총 12 개).
   fill 후 원본과 diff 해 "무엇이 어디서 바뀌었고 깨짐 위험은 없나" 를 LLM 이 스스로

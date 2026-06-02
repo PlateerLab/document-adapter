@@ -376,6 +376,39 @@ class DocumentAdapter(ABC):
             tables=self.get_tables(),
         )
 
+    def get_form_fields(self) -> list[dict[str, Any]]:
+        """표 셀 텍스트에서 라벨 후보와 **중복 여부(dot-path 필요)**를 미리 보여준다.
+
+        fill_form 호출 *전에* LLM 이 "어떤 라벨이 여러 곳에 있어 dot-path 로 구분해야
+        하는지" 를 알 수 있게 한다 — ambiguous 응답을 받고 재시도하는 라운드를 줄인다.
+
+        각 항목: {label, normalized, ambiguous, occurrences:[{table_index,row,col}]}.
+        (라벨로 보이는 비어있지 않은 anchor 셀 기준 — 빈 양식에서 가장 유용.)
+        """
+        index: dict[str, list[dict[str, Any]]] = {}
+        labels: dict[str, str] = {}
+        for t in self.get_tables(preview_rows=10_000, max_cell_len=200):
+            for r, row in enumerate(t.preview):
+                for c, val in enumerate(row):
+                    if not val:
+                        continue
+                    norm = _normalize_label(val)
+                    if not norm:
+                        continue
+                    index.setdefault(norm, []).append(
+                        {"table_index": t.index, "row": r, "col": c})
+                    labels.setdefault(norm, val)
+        fields = [
+            {
+                "label": labels[norm],
+                "normalized": norm,
+                "ambiguous": len(occ) > 1,
+                "occurrences": occ,
+            }
+            for norm, occ in index.items()
+        ]
+        return sorted(fields, key=lambda f: f["label"])
+
     # ---- editing ----
     @abstractmethod
     def render_template(self, context: dict[str, Any], *,
