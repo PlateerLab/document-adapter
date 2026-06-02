@@ -382,6 +382,21 @@ def inspect_document(path: str, min_rows: int = 1, min_cols: int = 1) -> dict[st
             except NotImplementedError:
                 pass  # DOCX / HWPX 는 shape 개념 약함 — skip
         result["tables"] = [t.to_dict() for t in filtered]
+
+        # 중복 라벨 힌트: 여러 곳에 같은 라벨이 있으면 fill_form 에서 ambiguous
+        # 가 되므로, 미리 dot-path 를 쓰라고 신호한다 (재시도 라운드 절감).
+        dups = [f for f in doc.get_form_fields() if f["ambiguous"]]
+        if dups:
+            result["duplicate_labels"] = [
+                {"label": f["label"],
+                 "count": len(f["occurrences"]),
+                 "locations": f["occurrences"]}
+                for f in dups
+            ]
+            result["duplicate_labels_hint"] = (
+                "같은 라벨이 여러 곳에 있습니다. fill_form 에서 이 라벨들은 "
+                "dot-path(예: '피해자.금액')로 섹션을 구분해 채우세요."
+            )
         return result
     finally:
         doc.close()
