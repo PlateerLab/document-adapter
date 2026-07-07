@@ -251,6 +251,134 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_text_map",
+        "description": (
+            "**DOCX/HWPX**. 문서의 문단 지도(본문+표 셀+머리말/꼬리말)를 문서 "
+            "순서로 반환 — 표 밖 텍스트 구조를 파악하는 '눈'. 각 항목: "
+            "{para_index, scope(body/table/header/footer/shape), location, "
+            "text[, truncated, char_count, is_heading]}. "
+            "placeholder 없는 일반 텍스트를 replace_text/insert_text 로 "
+            "편집하기 전에 이 도구(또는 find_text)로 위치를 파악할 것. "
+            "긴 문서는 offset/limit 로 페이징."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_para_len": {
+                    "type": "integer",
+                    "default": 80,
+                    "description": "문단 텍스트 표시 길이 상한 (원길이는 char_count)",
+                },
+                "offset": {"type": "integer", "default": 0},
+                "limit": {"type": "integer", "default": 200},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "find_text",
+        "description": (
+            "**DOCX/HWPX**. 문서 전역(본문+표+머리말)에서 텍스트를 검색. "
+            "단어가 XML run 으로 쪼개져 있어도 찾는다. 매치마다 "
+            "match_index(치환/삽입의 occurrences 로 지정 가능), scope, "
+            "location, «매치» 표시된 context, nearest_heading(가까운 위쪽 "
+            "제목), context_before(직전 문단)를 반환 — '~부분의 ~글' 같은 "
+            "위치 참조를 해소하는 근거로 사용. whole_word=true 면 "
+            "'홍길동님' 속 '홍길동' 같은 부분 일치 배제."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "query": {"type": "string", "description": "찾을 리터럴 텍스트"},
+                "whole_word": {"type": "boolean", "default": False},
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "body", "table", "header", "footer", "shape"],
+                    "default": "all",
+                },
+            },
+            "required": ["path", "query"],
+        },
+    },
+    {
+        "name": "replace_text",
+        "description": (
+            "**DOCX/HWPX**. 문서 전역에서 old → new 치환. run-level 서식"
+            "(폰트/크기/색/굵기) 보존 — 매치가 걸친 run 만 수정. 기본은 "
+            "모든 등장 치환; 특정 등장만 바꾸려면 find_text 의 match_index "
+            "를 occurrences 배열로 지정. 표 셀 안 텍스트도 함께 치환된다 "
+            "(셀 전체 교체는 set_cell 이 더 적합). "
+            "반환: {count, changes:[{match_index, location, paragraph_before/"
+            "after}...], invalid_occurrences?}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old": {"type": "string"},
+                "new": {"type": "string"},
+                "occurrences": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "치환할 match_index 목록 (생략 시 전부)",
+                },
+                "whole_word": {"type": "boolean", "default": False},
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "body", "table", "header", "footer", "shape"],
+                    "default": "all",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+            },
+            "required": ["path", "old", "new"],
+        },
+    },
+    {
+        "name": "insert_text",
+        "description": (
+            "**DOCX/HWPX**. 앵커 텍스트의 앞/뒤에 텍스트 삽입 (앵커 run 의 "
+            "서식 상속). '성명 옆에 홍길동이라고 써줘' 류 요청 처리용 — "
+            "anchor='성명', text='홍길동', position='after', separator=' '. "
+            "앵커가 여러 곳이면 전부 삽입되므로 find_text 로 match_index 를 "
+            "확인해 occurrences 로 좁힐 것."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "anchor": {"type": "string", "description": "기준 텍스트"},
+                "text": {"type": "string", "description": "삽입할 텍스트"},
+                "position": {
+                    "type": "string",
+                    "enum": ["after", "before"],
+                    "default": "after",
+                },
+                "occurrences": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                },
+                "whole_word": {"type": "boolean", "default": False},
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "body", "table", "header", "footer", "shape"],
+                    "default": "all",
+                },
+                "separator": {
+                    "type": "string",
+                    "default": "",
+                    "description": "앵커와 삽입문 사이 구분자 (예: ' ')",
+                },
+                "output_path": {"type": "string"},
+            },
+            "required": ["path", "anchor", "text"],
+        },
+    },
+    {
         "name": "get_form_controls",
         "description": (
             "**HWPX 전용**. 표가 아닌 폼 컨트롤(체크박스/라디오/콤보/에디트) 목록을 "
@@ -551,6 +679,81 @@ def set_shape_text(path: str, slide_index: int, shape_id: int, text: str,
     }
 
 
+def get_text_map(path: str, max_para_len: int = 80,
+                 offset: int = 0, limit: int = 200) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        result = doc.get_text_map(
+            max_para_len=max_para_len, offset=offset, limit=limit,
+        )
+    finally:
+        doc.close()
+    result["source"] = str(path)
+    return result
+
+
+def find_text(path: str, query: str, whole_word: bool = False,
+              scope: str = "all") -> dict[str, Any]:
+    doc = load(path)
+    try:
+        matches = doc.find_text(query, whole_word=whole_word, scope=scope)
+    finally:
+        doc.close()
+    return {
+        "source": str(path),
+        "query": query,
+        "match_count": len(matches),
+        "matches": [m.to_dict() for m in matches],
+    }
+
+
+def replace_text(path: str, old: str, new: str,
+                 occurrences: list[int] | None = None,
+                 whole_word: bool = False, scope: str = "all",
+                 output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.replace_text(
+            old, new,
+            occurrences=occurrences, whole_word=whole_word, scope=scope,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
+def insert_text(path: str, anchor: str, text: str,
+                position: str = "after",
+                occurrences: list[int] | None = None,
+                whole_word: bool = False, scope: str = "all",
+                separator: str = "",
+                output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.insert_text(
+            anchor, text,
+            position=position, occurrences=occurrences,
+            whole_word=whole_word, scope=scope, separator=separator,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
 def get_form_controls(path: str) -> dict[str, Any]:
     doc = load(path)
     try:
@@ -621,6 +824,10 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "fill_form": fill_form,
     "get_shapes": get_shapes,
     "set_shape_text": set_shape_text,
+    "get_text_map": get_text_map,
+    "find_text": find_text,
+    "replace_text": replace_text,
+    "insert_text": insert_text,
     "get_form_controls": get_form_controls,
     "set_form_control": set_form_control,
     "diff_documents": diff_documents,

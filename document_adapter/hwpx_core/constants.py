@@ -17,6 +17,7 @@ HP_CELL_ADDR = f"{{{HP_NS}}}cellAddr"
 HP_CELL_SPAN = f"{{{HP_NS}}}cellSpan"
 HP_CELL_SZ = f"{{{HP_NS}}}cellSz"
 HP_SUBLIST = f"{{{HP_NS}}}subList"
+HP_DRAW_TEXT = f"{{{HP_NS}}}drawText"
 HS_SEC = f"{{{HS_NS}}}sec"
 
 # 폼 컨트롤 (체크박스/라디오/콤보/리스트/에디트)

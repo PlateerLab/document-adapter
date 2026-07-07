@@ -16,7 +16,9 @@ from lxml import etree
 
 from document_adapter.hwpx_core import (
     HP_CELL_ADDR,
+    HP_CELL_SPAN,
     HP_CELL_SZ,
+    HP_DRAW_TEXT,
     HP_P,
     HP_RUN,
     HP_SUBLIST,
@@ -48,6 +50,7 @@ from .base import (
     TableIndexError,
     TableSchema,
     _has_template,
+    _ParaHandle,
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -349,67 +352,347 @@ class HwpxAdapter(DocumentAdapter):
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
-        """표 끝에 새 행 추가: 마지막 <hp:tr> deepcopy → 각 셀 비우고
-        cellAddr.rowAddr를 새 인덱스로 갱신. 제약은 기존과 동일:
-          - 마지막 행이 rowSpan에 걸리면 NotImplementedForFormat
+        # v0.14: 위치 지정 insert_row 로 위임 (at_row=None → 맨 끝).
+        self.insert_row(table_index, values, at_row=None)
+
+    # ---- 위치 지정 행/열 삽입 (v0.14+) ----
+
+    @staticmethod
+    def _tc_addr_span(tc) -> tuple[int, int, int, int]:
+        """<hp:tc> 의 (rowAddr, colAddr, rowSpan, colSpan). 파싱 실패 시 기본값."""
+        addr = tc.find(HP_CELL_ADDR)
+        span = tc.find(HP_CELL_SPAN)
+
+        def _i(el, name: str, default: str) -> int:
+            try:
+                return int(el.get(name, default)) if el is not None else int(default)
+            except (TypeError, ValueError):
+                return int(default)
+
+        return (
+            _i(addr, "rowAddr", "0"),
+            _i(addr, "colAddr", "0"),
+            _i(span, "rowSpan", "1"),
+            _i(span, "colSpan", "1"),
+        )
+
+    @staticmethod
+    def _blank_copied_hwpx_tc(tc) -> None:
+        """deepcopy 된 <hp:tc> 정리: 중첩 표 제거 + 텍스트 비움 (구조/서식 유지)."""
+        for nested in nested_tables(tc):
+            parent = nested.getparent()
+            if parent is not None:
+                parent.remove(nested)
+        sublist = tc.find(HP_SUBLIST)
+        if sublist is not None:
+            for p in sublist.findall(HP_P):
+                for run in p.findall(HP_RUN):
+                    for t in run.findall(HP_T):
+                        t.text = ""
+
+    def insert_row(
+        self,
+        table_index: int,
+        values: list[str],
+        at_row: int | None = None,
+    ) -> int:
+        """지정 위치에 새 행 삽입 — 인접 <hp:tr> deepcopy 로 서식 상속.
+
+        - 템플릿 행: at_row 위치의 기존 행 (맨 끝이면 마지막 행).
+        - 복사 셀의 rowSpan 은 1 로 리셋 (새 행은 독립), 중첩 표 제거.
+        - 삽입 경계를 세로 병합이 가로지르거나, 템플릿 행이 위쪽 병합에
+          물려 전체 열을 갖지 못하면 NotImplementedForFormat.
+        - values 는 논리 grid 열 기준 (병합 non-anchor 위치는 스킵).
         """
         tbl, section_name = self._get_table(table_index)
-        rows_before, _ = table_shape(tbl)
-
+        n_rows, n_cols = table_shape(tbl)
         trs = tbl.findall(HP_TR)
         if not trs:
-            raise NotImplementedForFormat("cannot append row to empty HWPX table")
+            raise NotImplementedForFormat(
+                "cannot insert a row into an empty HWPX table"
+            )
+        if at_row is None:
+            at_row = n_rows
+        if at_row < 0 or at_row > n_rows:
+            raise CellOutOfBoundsError(f"at_row {at_row} out of range 0..{n_rows}")
 
-        last_row = trs[-1]
-        for tc in last_row.findall(HP_TC):
-            from document_adapter.hwpx_core.constants import HP_CELL_SPAN
+        # 세로 병합 경계 가드
+        if 0 < at_row < n_rows:
+            for tr in trs:
+                for tc in tr.findall(HP_TC):
+                    r, _c, rs, _cs = self._tc_addr_span(tc)
+                    if r < at_row < r + rs:
+                        raise NotImplementedForFormat(
+                            f"insertion point row {at_row} crosses a vertical "
+                            f"merge anchored at row {r}; inserting here would "
+                            f"split the merged region."
+                        )
 
-            span = tc.find(HP_CELL_SPAN)
-            addr = tc.find(HP_CELL_ADDR)
-            if span is not None and addr is not None:
-                try:
-                    row_span = int(span.get("rowSpan", "1"))
-                    row_addr = int(addr.get("rowAddr", "0"))
-                except (TypeError, ValueError):
-                    continue
-                if row_addr + row_span - 1 != rows_before - 1:
-                    raise NotImplementedForFormat(
-                        "last row participates in a cross-row merge; "
-                        "append_row is not safe for this table."
-                    )
+        # 템플릿 행 완전성: 직접 소유한 colSpan 합이 전체 열수여야 복사 가능
+        # (위쪽 병합에 물린 행은 일부 열의 tc 가 없어 복사본이 불완전해진다)
+        template_idx = at_row if at_row < n_rows else n_rows - 1
+        template_tr = trs[template_idx]
+        owned_cols = sum(
+            self._tc_addr_span(tc)[3] for tc in template_tr.findall(HP_TC)
+        )
+        if owned_cols != n_cols:
+            raise NotImplementedForFormat(
+                f"template row {template_idx} participates in a cross-row "
+                f"merge (owns {owned_cols}/{n_cols} columns); choose another "
+                f"insertion point."
+            )
 
-        new_row_idx = rows_before
-        new_row = deepcopy(last_row)
-        for tc in new_row.findall(HP_TC):
+        new_tr = deepcopy(template_tr)
+        for tc in new_tr.findall(HP_TC):
             addr = tc.find(HP_CELL_ADDR)
             if addr is not None:
-                addr.set("rowAddr", str(new_row_idx))
-            # 기존 텍스트만 비우고 run/paragraph 구조는 유지
-            sublist = tc.find(HP_SUBLIST)
-            if sublist is not None:
-                for p in sublist.findall(HP_P):
-                    for run in p.findall(HP_RUN):
-                        for t in run.findall(HP_T):
-                            t.text = ""
+                addr.set("rowAddr", str(at_row))
+            span = tc.find(HP_CELL_SPAN)
+            if span is not None:
+                span.set("rowSpan", "1")
+            self._blank_copied_hwpx_tc(tc)
 
-        tbl.append(new_row)
+        if at_row < n_rows:
+            # 밀려나는 행들의 rowAddr 재번호 (+1)
+            for tr in trs[at_row:]:
+                for tc in tr.findall(HP_TC):
+                    addr = tc.find(HP_CELL_ADDR)
+                    if addr is None:
+                        continue
+                    r, _c, _rs, _cs = self._tc_addr_span(tc)
+                    addr.set("rowAddr", str(r + 1))
+            trs[at_row].addprevious(new_tr)
+        else:
+            trs[-1].addnext(new_tr)
 
-        # rowCnt 속성 갱신 (있을 때만)
         row_cnt_attr = tbl.get("rowCnt")
         if row_cnt_attr and row_cnt_attr.isdigit():
             tbl.set("rowCnt", str(int(row_cnt_attr) + 1))
 
         self._pkg.mark_dirty(section_name)
 
-        # 값 채우기 (병합된 non-anchor 위치는 스킵)
+        # 값 채우기 (논리 grid 열 기준, 병합 non-anchor 는 스킵)
         for i, value in enumerate(values):
-            _, cols = table_shape(tbl)
-            if i >= cols:
+            if i >= n_cols:
                 break
+            if not value:
+                continue
             try:
-                self.set_cell(table_index, new_row_idx, i, value)
+                self.set_cell(table_index, at_row, i, value)
             except MergedCellWriteError:
                 continue
+        return at_row
+
+    def insert_column(
+        self,
+        table_index: int,
+        values: list[str],
+        at_col: int | None = None,
+    ) -> int:
+        """지정 위치에 새 열 삽입 — 행별 인접 <hp:tc> deepcopy 로 서식 상속.
+
+        - 템플릿 셀: 각 행에서 왼쪽 이웃 열을 덮는 셀 (at_col=0 이면 오른쪽
+          이웃). 해당 행에 없으면(위쪽 세로 병합에 물린 열) 그 행의 첫 셀.
+        - 복사 셀의 rowSpan/colSpan 은 1 로 리셋, 중첩 표 제거.
+        - 표 전체 폭 유지: 모든 cellSz width 를 비례 축소해 새 열 폭을 흡수.
+        - 삽입 경계를 가로 병합(colSpan)이 가로지르면 NotImplementedForFormat.
+        - values 는 위 행부터 (values[0] 이 보통 헤더).
+        """
+        tbl, section_name = self._get_table(table_index)
+        n_rows, n_cols = table_shape(tbl)
+        trs = tbl.findall(HP_TR)
+        if not trs or n_cols == 0:
+            raise NotImplementedForFormat(
+                "cannot insert a column into an empty HWPX table"
+            )
+        if at_col is None:
+            at_col = n_cols
+        if at_col < 0 or at_col > n_cols:
+            raise CellOutOfBoundsError(f"at_col {at_col} out of range 0..{n_cols}")
+
+        # 가로 병합 경계 가드
+        if 0 < at_col < n_cols:
+            for tr in trs:
+                for tc in tr.findall(HP_TC):
+                    _r, c, _rs, cs = self._tc_addr_span(tc)
+                    if c < at_col < c + cs:
+                        raise NotImplementedForFormat(
+                            f"insertion point column {at_col} crosses a "
+                            f"horizontal merge anchored at column {c}; "
+                            f"inserting here would split the merged region."
+                        )
+
+        template_col = at_col - 1 if at_col > 0 else 0
+
+        # 새 열 폭 = 템플릿 열 폭 (colSpan 병합이면 등분). 표 폭 유지를 위한
+        # 비례 축소 계수는 첫 행의 폭 합으로 계산. 폭 정보가 없으면 재배분 생략.
+        def _tc_width(tc) -> int | None:
+            sz = tc.find(HP_CELL_SZ)
+            if sz is None:
+                return None
+            try:
+                return int(sz.get("width", ""))
+            except (TypeError, ValueError):
+                return None
+
+        template_width: int | None = None
+        for tr in trs:
+            for tc in tr.findall(HP_TC):
+                _r, c, _rs, cs = self._tc_addr_span(tc)
+                if c <= template_col < c + cs:
+                    w = _tc_width(tc)
+                    if w is not None and w > 0:
+                        template_width = max(1, w // cs)
+                    break
+            if template_width is not None:
+                break
+
+        scale = 1.0
+        if template_width is not None:
+            first_widths = [_tc_width(tc) for tc in trs[0].findall(HP_TC)]
+            if all(w is not None and w > 0 for w in first_widths) and first_widths:
+                total = sum(first_widths)  # type: ignore[arg-type]
+                scale = total / (total + template_width)
+
+        # 행별 삽입
+        for r_idx, tr in enumerate(trs):
+            tcs = tr.findall(HP_TC)
+            if not tcs:
+                continue
+            template_tc = None
+            insert_before = None
+            row_addr = self._tc_addr_span(tcs[0])[0]
+            for tc in tcs:
+                _r, c, _rs, cs = self._tc_addr_span(tc)
+                if c <= template_col < c + cs:
+                    template_tc = tc
+                if c >= at_col and insert_before is None:
+                    insert_before = tc
+                # 밀려나는 열들의 colAddr 재번호 (+1)
+                if c >= at_col:
+                    addr = tc.find(HP_CELL_ADDR)
+                    if addr is not None:
+                        addr.set("colAddr", str(c + 1))
+                # 폭 비례 축소
+                if scale != 1.0:
+                    sz = tc.find(HP_CELL_SZ)
+                    w = _tc_width(tc)
+                    if sz is not None and w is not None and w > 0:
+                        sz.set("width", str(max(1, int(round(w * scale)))))
+
+            new_tc = deepcopy(template_tc if template_tc is not None else tcs[0])
+            addr = new_tc.find(HP_CELL_ADDR)
+            if addr is not None:
+                addr.set("rowAddr", str(row_addr))
+                addr.set("colAddr", str(at_col))
+            span = new_tc.find(HP_CELL_SPAN)
+            if span is not None:
+                span.set("rowSpan", "1")
+                span.set("colSpan", "1")
+            if template_width is not None:
+                sz = new_tc.find(HP_CELL_SZ)
+                if sz is not None:
+                    sz.set(
+                        "width", str(max(1, int(round(template_width * scale))))
+                    )
+            self._blank_copied_hwpx_tc(new_tc)
+            if insert_before is not None:
+                insert_before.addprevious(new_tc)
+            else:
+                tcs[-1].addnext(new_tc)
+
+        col_cnt_attr = tbl.get("colCnt")
+        if col_cnt_attr and col_cnt_attr.isdigit():
+            tbl.set("colCnt", str(int(col_cnt_attr) + 1))
+
+        self._pkg.mark_dirty(section_name)
+
+        # 값 채우기 (행 인덱스 기준)
+        for r, value in enumerate(values):
+            if r >= n_rows:
+                break
+            if not value:
+                continue
+            try:
+                self.set_cell(table_index, r, at_col, value)
+            except (MergedCellWriteError, CellOutOfBoundsError):
+                continue
+        return at_col
+
+    # ---- paragraph text ops (v0.13+) ----
+
+    def _iter_text_paragraphs(self) -> Iterator[_ParaHandle]:
+        """섹션의 모든 <hp:p> 를 문서 순서로 순회 (본문+표 셀+글상자).
+
+        - ``root.iter(HP_P)`` 가 표 셀·글상자(drawText) 내부 문단까지 트리
+          순서로 정확히 한 번씩 방문한다 — DOCX 처럼 소스를 나눠 합칠 필요 없음.
+        - scope 는 가장 가까운 ancestor 로 판정: HP_TC → "table",
+          drawText → "shape", 그 외 "body". 표 문단의 location 은 set_cell 과
+          동일한 flat table_index 좌표계로 표기.
+        - 텍스트 변경 시 해당 섹션을 mark_dirty — 누락하면 저장이 안 된다.
+        - is_heading 은 항상 False (HWPX 스타일 해석은 범위 외 —
+          find_text 의 context_before 가 섹션 판단을 대신한다).
+        - 한계: <hp:t> 의 자식 요소(형광펜 마커 등) 뒤 tail 텍스트는 다루지
+          않음 (기존 paragraph_text / set_paragraph_text 와 동일 범위).
+        """
+        # 표 요소 → flat index (set_cell 좌표계와 일치).
+        # 주의: lxml 프록시는 참조가 사라지면 GC 후 재생성돼 id() 가 바뀐다.
+        # flat_tables 리스트로 프록시를 generator 수명 동안 살려둬야
+        # root.iter() 가 같은 노드에 대해 같은 프록시(=같은 id)를 돌려준다.
+        flat_tables = [(idx, tbl) for idx, tbl, _, _ in self._iter_tables()]
+        tbl_index_by_id: dict[int, int] = {
+            id(tbl): idx for idx, tbl in flat_tables
+        }
+
+        for section_name, root in self._pkg.iter_section_roots():
+            for n, p in enumerate(root.iter(HP_P)):
+                scope = "body"
+                location = f"{section_name}#p[{n}]"
+                anc = p.getparent()
+                while anc is not None:
+                    if anc.tag == HP_TC:
+                        scope = "table"
+                        tbl_el = anc.getparent()
+                        while tbl_el is not None and tbl_el.tag != HP_TBL:
+                            tbl_el = tbl_el.getparent()
+                        addr = anc.find(HP_CELL_ADDR)
+                        row = addr.get("rowAddr", "?") if addr is not None else "?"
+                        col = addr.get("colAddr", "?") if addr is not None else "?"
+                        t_idx = (
+                            tbl_index_by_id.get(id(tbl_el), -1)
+                            if tbl_el is not None else -1
+                        )
+                        location = f"table[{t_idx}].cell({row},{col})"
+                        break
+                    if anc.tag == HP_DRAW_TEXT:
+                        scope = "shape"
+                        location = f"{section_name}#p[{n}](shape)"
+                        break
+                    anc = anc.getparent()
+
+                ts = [t for run in p.findall(HP_RUN)
+                      for t in run.findall(HP_T)]
+
+                def get_texts(_ts=ts) -> list[str]:
+                    return [(t.text or "") for t in _ts]
+
+                def set_texts(new_texts: list[str], _ts=ts,
+                              _sec=section_name) -> None:
+                    changed = False
+                    for t, new_t in zip(_ts, new_texts):
+                        if (t.text or "") != new_t:
+                            t.text = new_t
+                            changed = True
+                    if changed:
+                        self._pkg.mark_dirty(_sec)
+
+                yield _ParaHandle(
+                    scope=scope,
+                    location=location,
+                    is_heading=False,
+                    get_texts=get_texts,
+                    set_texts=set_texts,
+                )
 
     # ---- 폼 컨트롤 (체크박스/라디오/콤보/리스트/에디트) ----
     def get_form_controls(self) -> list[dict[str, Any]]:

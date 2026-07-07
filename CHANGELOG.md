@@ -7,6 +7,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-07
+
+표에 **위치를 지정해** 행/열을 삽입하는 계층 추가 — "2026년 행을 2025년
+위에 넣어줘", "3분기 옆에 4분기 열 추가" 류 요청을 처리한다. 위치 결정은
+호출자(LLM)의 몫이고, 엔진은 서식 상속과 병합 안전성만 보장한다 (엔진이
+표 내용을 해석해 위치를 추론하지 않음 — 정렬 오판 방지 설계).
+
+### Added
+- **`insert_row(table_index, values, at_row=None)`** — 지정 위치에 행 삽입
+  (DOCX/HWPX/PPTX). 인접 행 deepcopy 로 음영·테두리·행높이·폰트 상속.
+  세로 병합이 삽입 경계를 가로지르면 `NotImplementedForFormat`.
+  `at_row=None` 은 맨 끝(append 동일). values 는 논리 grid 열 기준.
+- **`insert_column(table_index, values, at_col=None)`** — 지정 위치에 열
+  삽입 (DOCX/HWPX/PPTX, 신규 능력). 행별 인접 셀 deepcopy 로 서식 상속
+  (헤더 행은 헤더 서식, 데이터 행은 데이터 서식). 표 전체 폭 유지를 위해
+  기존 열 폭 비례 축소(tblGrid/tcW·cellSz·gridCol). 가로 병합 경계 교차
+  시 `NotImplementedForFormat`. 미구현 포맷(XLSX)은 base 기본값이 명시적
+  에러.
+
+### Fixed
+- **DOCX `append_row` 서식 미상속** — python-docx `add_row()` 가 음영·
+  테두리·행높이·폰트 없는 기본 스타일 빈 행을 만들던 문제. 마지막 행
+  deepcopy 방식(insert_row 위임)으로 HWPX 와 동작 통일.
+
+## [0.13.0] — 2026-07-06
+
+표 좌표(set_cell)·`{{placeholder}}`(render_template) 없이도 **문서 전역의
+임의 텍스트**를 찾고/치환하고/삽입하는 계층 추가 — "홍길동을 유지수로
+바꿔줘", "결재란 부분의 담당자 옆에 유지수라고 써줘" 류 요청을 LLM 이
+직접 처리할 수 있게 한다. (DOCX/HWPX)
+
+### Added
+- **`textops.splice_runs` / `find_spans`** — run 분할("홍길"+"동")에도
+  concat 오프셋으로 매치하고, 매치에 걸친 run 만 수정해 run-level 서식
+  (rPr/charPr)을 보존하는 포맷 독립 순수 알고리즘. 삽입은 앵커 구간
+  치환으로 구현돼 앵커 run 의 서식을 자동 상속.
+- **`get_text_map()`** — 본문+표 셀+머리말/꼬리말 문단 지도(문서 순서).
+  scope/location/is_heading/truncation, offset/limit 페이징. LLM 이 표 밖
+  텍스트 구조를 파악하는 '눈'.
+- **`find_text(query, whole_word, scope)`** — 전역 검색. 매치마다
+  «» context, nearest_heading, context_before 를 제공해 "~부분의" 위치
+  참조를 해소. `whole_word` 로 "홍길동님" 속 부분 일치 배제.
+- **`replace_text(old, new, occurrences, whole_word, scope)`** — 전역
+  치환 (기본 전부, `occurrences` 로 특정 등장만). 문단 내 다중 매치는
+  뒤→앞 splice 로 오프셋 안정.
+- **`insert_text(anchor, text, position, separator, ...)`** — 앵커
+  앞/뒤 삽입 (앵커 서식 상속).
+- MCP/Claude 도구 4 종 추가: `get_text_map` / `find_text` /
+  `replace_text` / `insert_text` (총 16 개).
+- 어댑터 훅 `_iter_text_paragraphs()` — DOCX 는 `iter_inner_content` 로
+  본문·표를 문서 순서 그대로(제목-표 연관 유지), hyperlink 내부 run 포함,
+  linked 머리말/꼬리말 제외. HWPX 는 `root.iter(hp:p)` 단일 경로에 표
+  flat index 좌표계 location + 변경 섹션 `mark_dirty`. PPTX/XLSX 는
+  `NotImplementedForFormat`.
+
+### Fixed
+- HWPX 표 flat index 매핑 시 lxml 프록시 GC 로 `id()` 가 불안정해지는
+  문제 — 프록시를 순회 수명 동안 유지해 좌표계 일치 보장.
+
 ## [0.12.0] — 2026-06-02
 
 ### Changed

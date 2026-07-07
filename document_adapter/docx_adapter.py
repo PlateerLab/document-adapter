@@ -23,8 +23,10 @@ from .base import (
     DocumentAdapter,
     MergeInfo,
     MergedCellWriteError,
+    NotImplementedForFormat,
     TableIndexError,
     TableSchema,
+    _ParaHandle,
 )
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -371,11 +373,322 @@ class DocxAdapter(DocumentAdapter):
         return old
 
     def append_row(self, table_index: int, values: list[str]) -> None:
+        # v0.14: python-docx add_row() 는 서식 없는 빈 행을 만들었다 (음영·
+        # 테두리·행높이·폰트 미상속). 마지막 행 deepcopy 방식의 insert_row 로
+        # 위임해 HWPX 와 동작을 통일한다.
+        self.insert_row(table_index, values, at_row=None)
+
+    # ---- 위치 지정 행/열 삽입 (v0.14+) ----
+
+    def insert_row(
+        self,
+        table_index: int,
+        values: list[str],
+        at_row: int | None = None,
+    ) -> int:
+        """지정 위치에 새 행 삽입 — 인접 행 <w:tr> deepcopy 로 서식 상속.
+
+        - 템플릿 행: at_row 위치의 기존 행 (맨 끝 삽입이면 마지막 행).
+          trPr(행높이)·tcPr(음영/테두리/폭)·pPr/rPr(폰트) 전부 상속된다.
+        - 복사된 셀의 vMerge 는 제거 (새 행은 항상 독립 행), 중첩 표 제거.
+        - 삽입 경계를 세로 병합이 가로지르면 NotImplementedForFormat.
+        - values 는 새 행의 **물리적 셀** 순서 (gridSpan 병합 셀은 1개로 침).
+        """
         tbl = self._get_table(table_index)
-        new_row = tbl.add_row()
-        for i, v in enumerate(values):
-            if i < len(new_row.cells):
-                _set_cell_preserving_format(new_row.cells[i], v)
+        grid, n_rows, n_cols = _build_grid(tbl)
+        if n_rows == 0:
+            raise NotImplementedForFormat(
+                "cannot insert a row into an empty DOCX table"
+            )
+        if at_row is None:
+            at_row = n_rows
+        if at_row < 0 or at_row > n_rows:
+            raise CellOutOfBoundsError(
+                f"at_row {at_row} out of range 0..{n_rows}"
+            )
+
+        # 세로 병합 경계 가드: 삽입 지점 위아래가 같은 병합 영역이면 거부
+        if 0 < at_row < n_rows:
+            for c in range(n_cols):
+                info = grid.get((at_row, c))
+                if info is not None and info["anchor"][0] < at_row:
+                    raise NotImplementedForFormat(
+                        f"insertion point row {at_row} crosses a vertical "
+                        f"merge anchored at {info['anchor']}; inserting here "
+                        f"would split the merged region."
+                    )
+
+        trs = tbl._tbl.tr_lst
+        template_idx = at_row if at_row < n_rows else n_rows - 1
+        new_tr = deepcopy(trs[template_idx])
+        for tc in new_tr.tc_lst:
+            _blank_copied_tc(tc)
+            _strip_tc_props(tc, "w:vMerge")
+
+        if at_row < n_rows:
+            trs[at_row].addprevious(new_tr)
+        else:
+            trs[-1].addnext(new_tr)
+
+        # 값 채우기 — 논리 grid 열 기준 (HWPX 와 동일 규약).
+        # gridSpan 병합 셀은 anchor 열의 값을 받고, 병합에 덮인 열 값은 무시.
+        from docx.table import _Cell
+        col = 0
+        for tc in new_tr.tc_lst:
+            gs = tc.grid_span or 1
+            if col < len(values) and values[col]:
+                _set_cell_preserving_format(_Cell(tc, tbl), values[col])
+            col += gs
+        return at_row
+
+    def insert_column(
+        self,
+        table_index: int,
+        values: list[str],
+        at_col: int | None = None,
+    ) -> int:
+        """지정 위치에 새 열 삽입 — 행별 인접 셀 <w:tc> deepcopy 로 서식 상속.
+
+        - 템플릿 셀: 각 행에서 왼쪽 이웃 열의 셀 (at_col=0 이면 오른쪽 이웃).
+          행별로 복사하므로 헤더 행은 헤더 서식, 데이터 행은 데이터 서식.
+        - 복사된 셀의 gridSpan/vMerge 제거 (새 열은 1칸짜리 독립 셀), 중첩 표 제거.
+        - 표 전체 폭 유지: tblGrid/tcW 폭을 비례 축소해 새 열 폭을 흡수.
+        - 삽입 경계를 가로 병합(gridSpan)이 가로지르는 행이 있으면 거부.
+        - values 는 위 행부터 (values[0] 이 보통 헤더).
+        """
+        from docx.oxml.ns import qn
+        from docx.table import _Cell
+
+        tbl = self._get_table(table_index)
+        grid, n_rows, n_cols = _build_grid(tbl)
+        if n_rows == 0 or n_cols == 0:
+            raise NotImplementedForFormat(
+                "cannot insert a column into an empty DOCX table"
+            )
+        if at_col is None:
+            at_col = n_cols
+        if at_col < 0 or at_col > n_cols:
+            raise CellOutOfBoundsError(
+                f"at_col {at_col} out of range 0..{n_cols}"
+            )
+
+        # 가로 병합 경계 가드
+        if 0 < at_col < n_cols:
+            for r in range(n_rows):
+                info = grid.get((r, at_col))
+                if info is not None and info["anchor"][1] < at_col:
+                    raise NotImplementedForFormat(
+                        f"insertion point column {at_col} crosses a horizontal "
+                        f"merge anchored at {info['anchor']} in row {r}; "
+                        f"inserting here would split the merged region."
+                    )
+
+        template_col = at_col - 1 if at_col > 0 else 0
+
+        # ── tblGrid 갱신 + 폭 비례 재배분 (표 전체 폭 유지) ──
+        grid_el = tbl._tbl.tblGrid
+        grid_cols = grid_el.gridCol_lst
+        widths: list[int | None] = []
+        for gc in grid_cols:
+            w = gc.get(qn("w:w"))
+            try:
+                widths.append(int(w) if w is not None else None)
+            except (TypeError, ValueError):
+                widths.append(None)
+
+        new_gc = deepcopy(grid_cols[template_col])
+        scale = 1.0
+        if all(w is not None and w > 0 for w in widths):
+            total = sum(widths)  # type: ignore[arg-type]
+            new_w = widths[template_col]
+            scale = total / (total + new_w)  # type: ignore[operator]
+            for gc, w in zip(grid_cols, widths):
+                gc.set(qn("w:w"), str(int(round(w * scale))))  # type: ignore[operator]
+            new_gc.set(qn("w:w"), str(int(round(new_w * scale))))  # type: ignore[operator]
+        if at_col < n_cols:
+            grid_cols[at_col].addprevious(new_gc)
+        else:
+            grid_cols[-1].addnext(new_gc)
+
+        # ── 행별 셀 삽입 ──
+        def _scale_tc_width(tc) -> None:
+            if scale == 1.0:
+                return
+            tc_pr = tc.tcPr
+            tcw = tc_pr.find(qn("w:tcW")) if tc_pr is not None else None
+            if tcw is not None and tcw.get(qn("w:type")) == "dxa":
+                w = tcw.get(qn("w:w"))
+                try:
+                    tcw.set(qn("w:w"), str(int(round(int(w) * scale))))
+                except (TypeError, ValueError):
+                    pass
+
+        new_tcs: list[Any] = []
+        for tr in tbl._tbl.tr_lst:
+            tcs = tr.tc_lst
+            if not tcs:
+                new_tcs.append(None)
+                continue
+            # 물리 셀 순회로 grid 좌표 계산: 삽입 대상/템플릿 셀 탐색
+            col = 0
+            insert_before = None
+            template_tc = tcs[0]
+            for tc in tcs:
+                gs = tc.grid_span or 1
+                if col <= template_col < col + gs:
+                    template_tc = tc
+                if col >= at_col and insert_before is None:
+                    insert_before = tc
+                col += gs
+                _scale_tc_width(tc)
+
+            new_tc = deepcopy(template_tc)
+            _blank_copied_tc(new_tc)
+            _strip_tc_props(new_tc, "w:vMerge", "w:gridSpan")
+            _scale_tc_width(new_tc)
+            if insert_before is not None:
+                insert_before.addprevious(new_tc)
+            else:
+                tcs[-1].addnext(new_tc)
+            new_tcs.append(new_tc)
+
+        for r, tc in enumerate(new_tcs):
+            if tc is not None and r < len(values) and values[r]:
+                _set_cell_preserving_format(_Cell(tc, tbl), values[r])
+        return at_col
+
+    # ---- paragraph text ops (v0.13+) ----
+
+    def _iter_text_paragraphs(self):
+        """본문(표와 문서 순서 교차)+표 셀+머리말/꼬리말 문단을 순회.
+
+        - 본문/표 순서: ``iter_inner_content`` (python-docx 1.1+) 로 문서
+          등장 순서를 보존 — nearest_heading 이 표 안 매치에도 올바르게
+          연결된다.
+        - 표 위치 표기는 set_cell 과 동일한 flat table_index 좌표계.
+          ``_iter_tables`` 는 DFS 라 top-level 표의 중첩 subtree 가 연속
+          블록으로 나오는 성질을 이용해 매핑한다.
+        - run 열거: 직접 run + hyperlink 내부 run (문서 순서 유지).
+          ``.//w:r`` 을 쓰지 않는 이유 — run 안에 중첩된 텍스트박스
+          (``w:txbxContent``)의 다른 문단 run 까지 끌려 들어오기 때문.
+        - 머리말/꼬리말: linked(자체 정의 없음) 는 건너뜀 — 이전 섹션
+          내용의 중복이자, 접근 시 정의가 생성될 수 있어 문서를 오염시킨다.
+        """
+        from docx.table import Table as _Table
+        from docx.text.paragraph import Paragraph as _Paragraph
+        from docx.text.run import Run as _Run
+
+        def para_handle(para, scope: str, location: str) -> _ParaHandle:
+            r_els = para._p.xpath("./w:r | ./w:hyperlink/w:r")
+            runs = [_Run(r, para) for r in r_els]
+
+            def get_texts() -> list[str]:
+                return [r.text for r in runs]
+
+            def set_texts(new_texts: list[str]) -> None:
+                # 값이 달라진 run 만 재기록 — 무관한 run 의 XML 재구성
+                # (탭/개행 요소 재생성 등)을 피한다.
+                for r, new_t in zip(runs, new_texts):
+                    if r.text != new_t:
+                        r.text = new_t
+
+            return _ParaHandle(
+                scope=scope,
+                location=location,
+                is_heading=_is_heading_para(para),
+                get_texts=get_texts,
+                set_texts=set_texts,
+            )
+
+        # 표 flat index 매핑: top-level 표 → [(flat_idx, tbl), ...(중첩 포함)]
+        subtree_by_toplevel: dict[int, list[tuple[int, Any]]] = {}
+        current_key: int | None = None
+        for idx, tbl, parent_path in self._iter_tables():
+            if parent_path == "":
+                current_key = id(tbl._tbl)
+                subtree_by_toplevel[current_key] = []
+            if current_key is not None:
+                subtree_by_toplevel[current_key].append((idx, tbl))
+
+        body_para_n = 0
+        for item in self._doc.iter_inner_content():
+            if isinstance(item, _Paragraph):
+                yield para_handle(item, "body", f"body.p[{body_para_n}]")
+                body_para_n += 1
+            elif isinstance(item, _Table):
+                for idx, tbl in subtree_by_toplevel.get(id(item._tbl), []):
+                    grid, _, _ = _build_grid(tbl)
+                    seen_tc: set[int] = set()
+                    for (r, c), info in sorted(grid.items()):
+                        if not info["is_anchor"]:
+                            continue
+                        tc_key = id(info["cell"]._tc)
+                        if tc_key in seen_tc:
+                            continue
+                        seen_tc.add(tc_key)
+                        for k, cp in enumerate(info["cell"].paragraphs):
+                            yield para_handle(
+                                cp, "table",
+                                f"table[{idx}].cell({r},{c}).p[{k}]",
+                            )
+
+        for si, section in enumerate(self._doc.sections):
+            for kind, part in (("header", section.header),
+                               ("footer", section.footer)):
+                if part.is_linked_to_previous:
+                    continue
+                for k, hp in enumerate(part.paragraphs):
+                    yield para_handle(
+                        hp, kind, f"section[{si}].{kind}.p[{k}]",
+                    )
+
+
+def _is_heading_para(para) -> bool:
+    """문단이 제목(heading)인지 휴리스틱 판정.
+
+    1. 스타일 이름이 "Heading ..." / "제목 ..." 계열
+    2. 문단 자체에 outlineLvl 이 지정된 경우 (스타일 무관 개요 수준)
+    """
+    try:
+        name = (para.style.name or "").lower()
+    except Exception:
+        name = ""
+    if name.startswith("heading") or name.startswith("제목"):
+        return True
+    from docx.oxml.ns import qn
+    ppr = para._p.pPr
+    return ppr is not None and ppr.find(qn("w:outlineLvl")) is not None
+
+
+def _blank_copied_tc(tc) -> None:
+    """deepcopy 된 ``<w:tc>`` 를 '빈 셀'로 정리 (서식은 유지).
+
+    - 중첩 표 제거: 템플릿 셀 안의 중첩 표가 새 셀로 복제되는 것 방지.
+    - 모든 run 텍스트 비움: ``<w:rPr>`` 는 남으므로 폰트/크기/볼드가 상속되고,
+      ``_set_cell_preserving_format`` 이 첫 run 을 재사용해 값을 쓴다.
+    """
+    from docx.oxml.ns import qn
+
+    for nested in tc.findall(qn("w:tbl")):
+        tc.remove(nested)
+    for t in tc.iter(qn("w:t")):
+        t.text = ""
+
+
+def _strip_tc_props(tc, *prop_tags: str) -> None:
+    """``<w:tcPr>`` 에서 지정 속성 요소 제거 (예: "w:vMerge", "w:gridSpan").
+
+    복사로 만든 새 셀은 병합에 참여하지 않는 독립 셀이어야 한다.
+    """
+    from docx.oxml.ns import qn
+
+    tc_pr = tc.tcPr
+    if tc_pr is None:
+        return
+    for tag in prop_tags:
+        el = tc_pr.find(qn(tag))
+        if el is not None:
+            tc_pr.remove(el)
 
 
 def _set_cell_preserving_format(cell, value: str) -> None:

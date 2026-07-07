@@ -465,6 +465,177 @@ class PptxAdapter(DocumentAdapter):
                 # 복제로 상속된 병합의 non-anchor 좌표는 자연히 스킵
                 continue
 
+    # ---- 위치 지정 행/열 삽입 (v0.14+) ----
+
+    @staticmethod
+    def _blank_copied_pptx_tc(tc, a: str) -> None:
+        """deepcopy 된 <a:tc> 의 run 텍스트만 비움 (스타일/구조 유지)."""
+        txBody = tc.find(f"{a}txBody")
+        if txBody is None:
+            return
+        for p in txBody.findall(f"{a}p"):
+            for r_el in p.findall(f"{a}r"):
+                for t_el in r_el.findall(f"{a}t"):
+                    t_el.text = ""
+
+    def insert_row(
+        self,
+        table_index: int,
+        values: list[str],
+        at_row: int | None = None,
+    ) -> int:
+        """지정 위치에 새 행 삽입 — 인접 <a:tr> deepcopy 로 서식 상속.
+
+        DrawingML 표는 모든 grid 위치에 물리 <a:tc> 가 존재하므로 (병합
+        continuation 은 hMerge/vMerge="1"), 템플릿 행 복사 + rowSpan/vMerge
+        리셋으로 안전하게 독립 행을 만든다.
+        """
+        table = self._get_table(table_index)
+        tbl_elem = table._tbl
+        a = f"{{{_A_NS}}}"
+        trs = tbl_elem.findall(f"{a}tr")
+        n_rows = len(trs)
+        if n_rows == 0:
+            raise NotImplementedForFormat(
+                "cannot insert a row into an empty PPTX table"
+            )
+        if at_row is None:
+            at_row = n_rows
+        if at_row < 0 or at_row > n_rows:
+            raise CellOutOfBoundsError(f"at_row {at_row} out of range 0..{n_rows}")
+
+        # 세로 병합 경계 가드: 삽입 위치 행에 vMerge continuation 이 있으면
+        # 위 행에서 내려오는 병합이 경계를 가로지른다는 뜻.
+        if 0 < at_row < n_rows:
+            for tc in trs[at_row].findall(f"{a}tc"):
+                if tc.get("vMerge") == "1":
+                    raise NotImplementedForFormat(
+                        f"insertion point row {at_row} crosses a vertical "
+                        f"merge; inserting here would split the merged region."
+                    )
+        if at_row == n_rows:
+            # 맨 끝 삽입: 기존 append_row 와 동일한 마지막 행 안전성 검사
+            for tc in trs[-1].findall(f"{a}tc"):
+                if tc.get("vMerge") == "1":
+                    raise NotImplementedForFormat(
+                        "last row participates in a cross-row merge (vMerge); "
+                        "inserting at the end is not safe for this table."
+                    )
+
+        template_idx = at_row if at_row < n_rows else n_rows - 1
+        new_row = deepcopy(trs[template_idx])
+        for tc in new_row.findall(f"{a}tc"):
+            # 새 행은 세로 병합에 참여하지 않는 독립 행
+            if tc.get("rowSpan"):
+                del tc.attrib["rowSpan"]
+            if tc.get("vMerge"):
+                del tc.attrib["vMerge"]
+            self._blank_copied_pptx_tc(tc, a)
+
+        if at_row < n_rows:
+            trs[at_row].addprevious(new_row)
+        else:
+            trs[-1].addnext(new_row)
+
+        n_cols = len(list(table.columns))
+        for i, value in enumerate(values):
+            if i >= n_cols:
+                break
+            if not value:
+                continue
+            try:
+                self.set_cell(table_index, at_row, i, value)
+            except MergedCellWriteError:
+                continue
+        return at_row
+
+    def insert_column(
+        self,
+        table_index: int,
+        values: list[str],
+        at_col: int | None = None,
+    ) -> int:
+        """지정 위치에 새 열 삽입 — 행별 인접 <a:tc> deepcopy 로 서식 상속.
+
+        <a:tblGrid> 에 gridCol 을 삽입하고 각 행에 새 <a:tc> 를 끼워 넣는다.
+        표 전체 폭 유지를 위해 gridCol 폭을 비례 축소해 새 열 폭을 흡수한다.
+        """
+        table = self._get_table(table_index)
+        tbl_elem = table._tbl
+        a = f"{{{_A_NS}}}"
+        trs = tbl_elem.findall(f"{a}tr")
+        grid_el = tbl_elem.find(f"{a}tblGrid")
+        grid_cols = grid_el.findall(f"{a}gridCol") if grid_el is not None else []
+        n_rows, n_cols = len(trs), len(grid_cols)
+        if n_rows == 0 or n_cols == 0:
+            raise NotImplementedForFormat(
+                "cannot insert a column into an empty PPTX table"
+            )
+        if at_col is None:
+            at_col = n_cols
+        if at_col < 0 or at_col > n_cols:
+            raise CellOutOfBoundsError(f"at_col {at_col} out of range 0..{n_cols}")
+
+        # 가로 병합 경계 가드: 삽입 위치 열에 hMerge continuation 이 있으면 거부
+        if 0 < at_col < n_cols:
+            for tr in trs:
+                tcs = tr.findall(f"{a}tc")
+                if at_col < len(tcs) and tcs[at_col].get("hMerge") == "1":
+                    raise NotImplementedForFormat(
+                        f"insertion point column {at_col} crosses a horizontal "
+                        f"merge; inserting here would split the merged region."
+                    )
+
+        template_col = at_col - 1 if at_col > 0 else 0
+
+        # gridCol 삽입 + 폭 비례 재배분 (EMU)
+        widths: list[int | None] = []
+        for gc in grid_cols:
+            try:
+                widths.append(int(gc.get("w", "")))
+            except (TypeError, ValueError):
+                widths.append(None)
+        new_gc = deepcopy(grid_cols[template_col])
+        scale = 1.0
+        if all(w is not None and w > 0 for w in widths):
+            total = sum(widths)  # type: ignore[arg-type]
+            new_w = widths[template_col]
+            scale = total / (total + new_w)  # type: ignore[operator]
+            for gc, w in zip(grid_cols, widths):
+                gc.set("w", str(int(round(w * scale))))  # type: ignore[operator]
+            new_gc.set("w", str(int(round(new_w * scale))))  # type: ignore[operator]
+        if at_col < n_cols:
+            grid_cols[at_col].addprevious(new_gc)
+        else:
+            grid_cols[-1].addnext(new_gc)
+
+        # 행별 새 셀 삽입
+        for tr in trs:
+            tcs = tr.findall(f"{a}tc")
+            if not tcs:
+                continue
+            template_tc = tcs[min(template_col, len(tcs) - 1)]
+            new_tc = deepcopy(template_tc)
+            for attr in ("gridSpan", "hMerge", "rowSpan", "vMerge"):
+                if new_tc.get(attr):
+                    del new_tc.attrib[attr]
+            self._blank_copied_pptx_tc(new_tc, a)
+            if at_col < len(tcs):
+                tcs[at_col].addprevious(new_tc)
+            else:
+                tcs[-1].addnext(new_tc)
+
+        for r, value in enumerate(values):
+            if r >= n_rows:
+                break
+            if not value:
+                continue
+            try:
+                self.set_cell(table_index, r, at_col, value)
+            except (MergedCellWriteError, CellOutOfBoundsError):
+                continue
+        return at_col
+
 
 def _set_text_frame_preserving_format(text_frame, value: str) -> None:
     """Write ``value`` into ``text_frame`` without losing run-level formatting.

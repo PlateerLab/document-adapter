@@ -13,7 +13,9 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+
+from .textops import find_spans, splice_runs
 
 
 _LABEL_NORMALIZE_RE = re.compile(r"[\s·・／/\-:：()\[\]<>*#]+")
@@ -325,6 +327,59 @@ class CellContent:
 
 
 @dataclass
+class TextMatch:
+    """본문/표/머리말 등 문서 전역 텍스트 검색의 매치 1건.
+
+    ``match_index`` 는 같은 (query, whole_word, scope) 조건의 find/replace/insert
+    호출 간에 안정적인 전역 등장 순번 (0-based) — ``occurrences`` 인자로 특정
+    매치만 선택할 때 이 값을 쓴다.
+
+    ``para_index`` 는 :meth:`DocumentAdapter.get_text_map` 의 문단 인덱스와 동일
+    좌표계. ``context`` 는 매치를 «» 로 감싼 주변 발췌라 LLM 이 어느 매치인지
+    바로 식별할 수 있다. ``nearest_heading`` / ``context_before`` 는 "~부분의"
+    같은 섹션 참조를 해소하기 위한 힌트.
+    """
+    match_index: int
+    scope: str                       # body | table | header | footer | shape
+    location: str                    # 사람이 읽는 위치 (예: "table[3].cell(1,2)")
+    para_index: int
+    start: int                       # 문단 concat 텍스트 기준 오프셋
+    end: int
+    context: str                     # "…앞«매치»뒤…" 발췌
+    nearest_heading: str | None = None
+    context_before: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "match_index": self.match_index,
+            "scope": self.scope,
+            "location": self.location,
+            "para_index": self.para_index,
+            "context": self.context,
+        }
+        if self.nearest_heading:
+            d["nearest_heading"] = self.nearest_heading
+        if self.context_before:
+            d["context_before"] = self.context_before
+        return d
+
+
+@dataclass
+class _ParaHandle:
+    """포맷 어댑터가 base 의 텍스트 연산에 넘기는 문단 핸들.
+
+    ``get_texts`` 는 문단의 run 텍스트 리스트 (concat 이 문단 전체 텍스트),
+    ``set_texts`` 는 같은 길이의 리스트를 받아 run 에 되쓴다 — 어댑터는
+    값이 달라진 run 만 실제로 써서 무관한 run 의 XML 재구성을 피해야 한다.
+    """
+    scope: str                            # body | table | header | footer | shape
+    location: str
+    is_heading: bool
+    get_texts: Callable[[], list[str]]
+    set_texts: Callable[[list[str]], None]
+
+
+@dataclass
 class DocumentSchema:
     """문서 전체 스키마."""
     format: str
@@ -508,6 +563,62 @@ class DocumentAdapter(ABC):
     def append_row(self, table_index: int, values: list[str]) -> None:
         """표 끝에 새 행 추가."""
 
+    # ---- 위치 지정 행/열 삽입 (v0.14+) ----
+    #
+    # 설계 원칙: "어디에 넣을지"는 호출자(LLM/사용자)가 결정하고, 엔진은
+    # 위치를 추론하지 않는다. 엔진의 책임은 서식 상속(인접 행/셀 deepcopy)과
+    # 병합 안전성 가드뿐이다. at_row/at_col 생략(None) 시 맨 끝에 추가한다.
+
+    def insert_row(
+        self,
+        table_index: int,
+        values: list[str],
+        at_row: int | None = None,
+    ) -> int:
+        """지정 위치에 새 행 삽입 (기존 at_row 행은 아래로 밀림).
+
+        서식은 인접 행(삽입 위치의 기존 행, 맨 끝이면 마지막 행)을 deepcopy
+        해 상속한다. 삽입 경계를 세로 병합(rowSpan/vMerge)이 가로지르면
+        ``NotImplementedForFormat`` 을 던진다.
+
+        Args:
+            table_index: 대상 표 flat index.
+            values: 새 행의 셀 값 (왼쪽부터. 부족분은 빈칸, 초과분 무시).
+            at_row: 0-based 삽입 위치. None 이면 맨 끝(append 와 동일).
+
+        Returns:
+            실제 삽입된 0-based 행 인덱스.
+        """
+        raise NotImplementedForFormat(
+            f"insert_row is not supported for format '{self.format}'"
+        )
+
+    def insert_column(
+        self,
+        table_index: int,
+        values: list[str],
+        at_col: int | None = None,
+    ) -> int:
+        """지정 위치에 새 열 삽입 (기존 at_col 열은 오른쪽으로 밀림).
+
+        서식은 인접 열(왼쪽 이웃, at_col=0 이면 오른쪽 이웃)의 셀을 행별로
+        deepcopy 해 상속한다. 표 전체 폭을 유지하기 위해 기존 열 폭을 비례
+        축소해 새 열 폭을 흡수한다. 삽입 경계를 가로 병합(colSpan/gridSpan)이
+        가로지르면 ``NotImplementedForFormat`` 을 던진다.
+
+        Args:
+            table_index: 대상 표 flat index.
+            values: 새 열의 셀 값 (위 행부터. 첫 값이 보통 헤더.
+                부족분은 빈칸, 초과분 무시).
+            at_col: 0-based 삽입 위치. None 이면 맨 오른쪽.
+
+        Returns:
+            실제 삽입된 0-based 열 인덱스.
+        """
+        raise NotImplementedForFormat(
+            f"insert_column is not supported for format '{self.format}'"
+        )
+
     # ---- shape text (v0.8+, PPTX 전용) ----
     def get_shapes(
         self,
@@ -535,6 +646,263 @@ class DocumentAdapter(ABC):
         """
         raise NotImplementedForFormat(
             f"{self.format} does not support shape-level text editing"
+        )
+
+    # ---- paragraph text ops (v0.13+, DOCX/HWPX) ----
+    #
+    # 표 좌표(set_cell)나 {{placeholder}}(render_template) 없이도 문서 전역
+    # 텍스트를 다루는 계층. 포맷 어댑터는 ``_iter_text_paragraphs`` 하나만
+    # 구현하면 get_text_map / find_text / replace_text / insert_text 를
+    # 전부 얻는다 (알고리즘은 textops.splice_runs 공용).
+
+    def _iter_text_paragraphs(self) -> Iterator[_ParaHandle]:
+        """문서의 모든 문단을 **문서 등장 순서**로 순회 (본문+표+머리말 등).
+
+        DOCX/HWPX 만 구현. 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support paragraph-level text operations"
+        )
+
+    def get_text_map(
+        self,
+        *,
+        max_para_len: int = 80,
+        offset: int = 0,
+        limit: int | None = 200,
+        include_empty: bool = False,
+    ) -> dict[str, Any]:
+        """문서의 문단 지도를 반환 — LLM 이 표 밖 텍스트 구조를 파악하는 "눈".
+
+        각 항목: {para_index, scope, location, text[, truncated, char_count,
+        is_heading]}. ``para_index`` 는 find_text 의 것과 동일 좌표계.
+
+        토큰 절약: 문단 텍스트는 ``max_para_len`` 자로 잘리고(원길이는
+        char_count 로 제공), 빈 문단은 기본 제외, ``offset``/``limit`` 로
+        페이징한다 (offset 은 비어있지 않은 문단 목록 기준).
+        """
+        entries: list[dict[str, Any]] = []
+        total = 0
+        for para_index, h in enumerate(self._iter_text_paragraphs()):
+            total = para_index + 1
+            text = "".join(h.get_texts()).strip()
+            if not text and not include_empty:
+                continue
+            entry: dict[str, Any] = {
+                "para_index": para_index,
+                "scope": h.scope,
+                "location": h.location,
+                "text": text[:max_para_len],
+            }
+            if len(text) > max_para_len:
+                entry["truncated"] = True
+                entry["char_count"] = len(text)
+            if h.is_heading:
+                entry["is_heading"] = True
+            entries.append(entry)
+
+        window = entries[offset:offset + limit] if limit is not None \
+            else entries[offset:]
+        return {
+            "format": self.format,
+            "total_paragraphs": total,
+            "listed": len(entries),
+            "offset": offset,
+            "returned": len(window),
+            "paragraphs": window,
+        }
+
+    def find_text(
+        self,
+        query: str,
+        *,
+        whole_word: bool = False,
+        scope: str = "all",
+        max_matches: int = 200,
+    ) -> list[TextMatch]:
+        """문서 전역에서 ``query`` 의 등장 위치를 찾는다 (run 분할 무관).
+
+        매치마다 «» 로 감싼 주변 발췌(context)와 가장 가까운 위쪽 제목
+        (nearest_heading), 직전 문단 발췌(context_before)를 제공해 LLM 이
+        "어느 부분의" 매치인지 판단할 수 있게 한다. 여러 매치 중 일부만
+        치환/삽입하려면 여기의 ``match_index`` 를 occurrences 로 넘긴다.
+        """
+        if not query:
+            raise ValueError("query must be a non-empty string")
+        if scope not in ("all", "body", "table", "header", "footer", "shape"):
+            raise ValueError(f"invalid scope: {scope!r}")
+
+        matches: list[TextMatch] = []
+        nearest_heading: str | None = None
+        prev_snippet: str | None = None
+        for para_index, h in enumerate(self._iter_text_paragraphs()):
+            text = "".join(h.get_texts())
+            stripped = text.strip()
+            if h.is_heading and stripped:
+                nearest_heading = stripped[:80]
+            in_scope = scope == "all" or h.scope == scope
+            if in_scope and len(matches) < max_matches:
+                for start, end in find_spans(text, query,
+                                             whole_word=whole_word):
+                    if len(matches) >= max_matches:
+                        break
+                    ctx_s = max(0, start - 40)
+                    ctx_e = min(len(text), end + 40)
+                    context = (
+                        ("…" if ctx_s > 0 else "")
+                        + text[ctx_s:start]
+                        + "«" + text[start:end] + "»"
+                        + text[end:ctx_e]
+                        + ("…" if ctx_e < len(text) else "")
+                    )
+                    matches.append(TextMatch(
+                        match_index=len(matches),
+                        scope=h.scope,
+                        location=h.location,
+                        para_index=para_index,
+                        start=start,
+                        end=end,
+                        context=context,
+                        nearest_heading=nearest_heading,
+                        context_before=prev_snippet,
+                    ))
+            if stripped and not h.is_heading:
+                prev_snippet = stripped[:80]
+        return matches
+
+    def _splice_matched_text(
+        self,
+        query: str,
+        make_replacement: Callable[[str], str],
+        *,
+        occurrences: int | list[int] | None,
+        whole_word: bool,
+        scope: str,
+    ) -> dict[str, Any]:
+        """replace_text/insert_text 공용 본체.
+
+        문단을 한 번 순회하며 매치를 찾고, 선택된 매치를 문단 내 **뒤→앞**
+        순으로 splice 해 오프셋 불변성을 보장한다. 전역 매치 순번(gidx)은
+        find_text 와 동일하게 scope 필터 통과분만 센다 — 두 호출의
+        match_index 가 일치해야 occurrences 지정이 성립한다.
+        """
+        if not query:
+            raise ValueError("query must be a non-empty string")
+        if scope not in ("all", "body", "table", "header", "footer", "shape"):
+            raise ValueError(f"invalid scope: {scope!r}")
+        if occurrences is None:
+            wanted: set[int] | None = None
+        elif isinstance(occurrences, int):
+            wanted = {occurrences}
+        else:
+            wanted = set(occurrences)
+            if not wanted:
+                raise ValueError("occurrences must not be an empty list")
+
+        changes: list[dict[str, Any]] = []
+        gidx = 0
+        for para_index, h in enumerate(self._iter_text_paragraphs()):
+            if scope != "all" and h.scope != scope:
+                continue
+            texts = h.get_texts()
+            text = "".join(texts)
+            spans = find_spans(text, query, whole_word=whole_word)
+            if not spans:
+                continue
+            selected: list[tuple[int, int, int]] = []
+            for start, end in spans:
+                if wanted is None or gidx in wanted:
+                    selected.append((gidx, start, end))
+                gidx += 1
+            if not selected:
+                continue
+
+            new_texts = texts
+            for _, start, end in reversed(selected):
+                new_texts = splice_runs(
+                    new_texts, start, end, make_replacement(text[start:end])
+                )
+            h.set_texts(new_texts)
+            new_text = "".join(new_texts)
+            for mi, start, end in selected:
+                changes.append({
+                    "match_index": mi,
+                    "para_index": para_index,
+                    "scope": h.scope,
+                    "location": h.location,
+                    "matched": text[start:end],
+                    "paragraph_before": text.strip()[:160],
+                    "paragraph_after": new_text.strip()[:160],
+                })
+
+        result: dict[str, Any] = {
+            "count": len(changes),
+            "changes": changes,
+        }
+        if not changes:
+            result["not_found"] = True
+        if wanted is not None:
+            invalid = sorted(wanted - {c["match_index"] for c in changes})
+            if invalid:
+                result["invalid_occurrences"] = invalid
+                result["total_occurrences"] = gidx
+        return result
+
+    def replace_text(
+        self,
+        old: str,
+        new: str,
+        *,
+        occurrences: int | list[int] | None = None,
+        whole_word: bool = False,
+        scope: str = "all",
+    ) -> dict[str, Any]:
+        """문서 전역에서 ``old`` 를 ``new`` 로 치환 (run-level 서식 보존).
+
+        기본은 **모든 등장을 치환**. 특정 등장만 바꾸려면 find_text 의
+        match_index 를 ``occurrences`` 로 넘긴다. ``whole_word=True`` 면
+        "홍길동님" 속 "홍길동" 같은 부분 일치를 배제한다.
+
+        반환: {count, changes:[{match_index, para_index, scope, location,
+        matched, paragraph_before, paragraph_after}], not_found?,
+        invalid_occurrences?}.
+        """
+        return self._splice_matched_text(
+            old, lambda _m: new,
+            occurrences=occurrences, whole_word=whole_word, scope=scope,
+        )
+
+    def insert_text(
+        self,
+        anchor: str,
+        text: str,
+        *,
+        position: str = "after",
+        occurrences: int | list[int] | None = None,
+        whole_word: bool = False,
+        scope: str = "all",
+        separator: str = "",
+    ) -> dict[str, Any]:
+        """``anchor`` 텍스트의 앞/뒤에 ``text`` 를 삽입 (앵커 서식 상속).
+
+        내부적으로 앵커 구간을 "앵커+구분자+삽입문"(after) 또는
+        "삽입문+구분자+앵커"(before) 로 치환한다 — 삽입문이 앵커가 있던
+        run 에 들어가므로 앵커의 서식을 그대로 물려받는다.
+
+        앵커가 여러 곳이면 기본적으로 **전부** 에 삽입되므로, 특정 위치만
+        원하면 find_text 로 확인한 match_index 를 ``occurrences`` 로 지정할 것.
+        """
+        if position not in ("after", "before"):
+            raise ValueError(
+                f"position must be 'after' or 'before', got {position!r}"
+            )
+        if position == "after":
+            make = lambda m: f"{m}{separator}{text}"   # noqa: E731
+        else:
+            make = lambda m: f"{text}{separator}{m}"   # noqa: E731
+        return self._splice_matched_text(
+            anchor, make,
+            occurrences=occurrences, whole_word=whole_word, scope=scope,
         )
 
     # ---- form controls (체크박스/라디오/콤보/에디트 — HWPX 전용) ----

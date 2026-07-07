@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import DocumentAdapter, DocumentSchema, TableSchema
+from .base import DocumentAdapter, DocumentSchema, TableSchema, TextMatch
 from .docx_adapter import DocxAdapter
 from .hwpx_adapter import HwpxAdapter
 from .pptx_adapter import PptxAdapter
@@ -22,6 +22,7 @@ __all__ = [
     "DocumentAdapter",
     "DocumentSchema",
     "TableSchema",
+    "TextMatch",
     "DocxAdapter",
     "PptxAdapter",
     "HwpxAdapter",
