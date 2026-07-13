@@ -96,8 +96,15 @@ def test_hwpx_billion_laughs_not_expanded(tmp_path: Path) -> None:
     _poison_section0(good, bad, doctype=doctype, marker=(b"BOOM", b"&d;"))
 
     pkg = HwpxPackage.open(bad)
-    text = pkg.export_text()
-    pkg.close()
+    # 방어 성공은 libxml2 버전에 따라 두 형태로 나타난다:
+    # - 신형: 엔티티를 확장하지 않고 파싱 성공 → 본문에 'a'가 거의 없음
+    # - 구형(2.9.x): 확장 시도 자체를 entity reference loop로 감지해 파싱 거부
+    try:
+        text = pkg.export_text()
+    except etree.XMLSyntaxError:
+        return
+    finally:
+        pkg.close()
     # 확장됐다면 'a'가 수천 자. 하드닝되면 0자.
     assert text.count("a") < 100, "엔티티 확장 DoS 방어 필요"
 
