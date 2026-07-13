@@ -7,6 +7,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-13
+
+**생성 대상 확장 — .pptx / .hwpx** — v0.15 의 docx/xlsx 생성 계층을
+프레젠테이션·한글 문서로 넓혔다. markdown 렌더러 3종(.docx/.pptx/.hwpx)이
+같은 `markdown_parser`(블록 IR)를 공유해, 하나의 markdown 입력이 포맷만
+바꿔 재사용된다. 생성 직후 `load()` 왕복은 신규 포맷에도 동일하게 성립한다.
+
+### Added
+- **`.pptx` 생성** (`generate/pptx_writer.py`) — `create_document("x.pptx",
+  markdown=...)`. `---` 또는 레벨 1~2 헤딩이 슬라이드 경계, 나머지 블록
+  (불릿/문단/표)은 본문 플레이스홀더로 배치. python-pptx 내장 레이아웃 사용.
+- **`.hwpx` 생성** (`generate/hwpx_writer.py`) — `create_document("x.hwpx",
+  markdown=...)`. v0.15 에서 "v0.16 예정" 안내 에러였던 경로가 실제 렌더러로
+  대체됨. HWPX(OWPML) 패키지를 직접 조립, `load()` 가 곧바로 성립.
+- `create_document` 디스패처의 markdown 대상이 `{.docx, .pptx, .hwpx}` 로 확장.
+
+## [0.15.0] — 2026-07-09
+
+**문서 생성** — 편집 전용이던 엔진에 "무에서 생성" 계층 추가. LLM 은 경량
+중간 산출물(제약된 markdown / sheet spec dict)만 쓰고 결정적 렌더러가
+스타일 잡힌 문서로 변환한다 (OOXML 직접 생성 대비 토큰 ~96% 절감).
+생성 직후 `load()` 가 성립해 기존 편집 도구(set_cell / insert_row / ...)와
+같은 좌표계로 이어진다 — 생성-편집 왕복 보장.
+
+### Added
+- **`create_document(path, *, markdown=None, sheets=None, lang="ko",
+  overwrite=False)`** — 확장자 디스패치 생성 진입점 (`load()` 와 대칭).
+  `.docx`=markdown, `.xlsx`=sheet spec. `.hwpx` 는 v0.16 예정 안내 에러.
+- **`generate/` 서브패키지** — `markdown_parser`(블록 IR: 포맷 무관 공용
+  파서 — 이후 HWPX writer 가 공유), `docx_writer`(python-docx 내장 스타일만
+  사용, CJK `w:eastAsia` 폰트 명시, hr=pBdr), `xlsx_writer`(헤더 스타일·
+  틀고정·자동 열폭·`=` 수식 통과·`number_formats`).
+- MCP/Claude 도구 **`create_document`** (총 17개) — 반환값에 생성 직후 표
+  좌표 요약(`tables`/`table_shapes`) 포함, LLM 이 후속 편집을 바로 이어감.
+- markdown 서브셋: 헤딩/문단/불릿/번호/굵게/기울임/코드/파이프표/인용/
+  수평선/코드펜스. 지원 외 문법은 에러 없이 일반 텍스트 관용 처리.
+- 모든 스펙 검증 실패는 이중어(EN/KO) `ValueError` — 호출 레이어의 1회
+  재시도 계약용 (렌더러가 곧 검증기).
+
 ## [0.14.0] — 2026-07-07
 
 표에 **위치를 지정해** 행/열을 삽입하는 계층 추가 — "2026년 행을 2025년

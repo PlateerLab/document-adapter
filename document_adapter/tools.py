@@ -459,6 +459,60 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["path", "data"],
         },
     },
+    {
+        "name": "create_document",
+        "description": (
+            "**처음부터 새 문서를 생성**한다 (.docx=markdown, .xlsx=sheets). "
+            "역할 경계: `{{placeholder}}` 템플릿이 이미 있으면 render_template, "
+            "기존 파일 수정은 set_cell/insert_row 등 편집 도구, 파일이 아예 없을 때만 이 도구. "
+            "\n"
+            "**markdown 서브셋 (.docx)** — 아래만 지원, 그 외는 일반 텍스트로 처리됨: "
+            "`#`~`######` 헤딩(단일 `#` 제목으로 시작) · 문단 · `- ` 불릿 · `1. ` 번호 · "
+            "`**굵게**` `*기울임*` `` `코드` `` · 파이프 표(`|---|` 구분행 필수) · "
+            "`> ` 인용 · `---` 수평선 · ``` 코드펜스. "
+            "금지: HTML / 이미지 / 각주 / 중첩 리스트 / 셀 병합. "
+            "\n"
+            "**sheets 스키마 (.xlsx)**: "
+            '[{"name": "매출 요약", "headers": ["분기", "매출(억원)"], '
+            '"rows": [["1분기", 120], ["합계", "=SUM(B2:B2)"]], '
+            '"number_formats": {"B": "#,##0"}}] — 숫자는 숫자 타입으로, '
+            "`=` 시작 문자열은 살아있는 수식이 됨. 스타일(헤더/테두리/틀고정)은 자동. "
+            "\n"
+            "**작성 규칙**: placeholder(TBD/내용추가) 금지 — 실제 완성된 내용을 쓸 것. "
+            "생성 후 미세 수정은 inspect_document 좌표로 기존 편집 도구를 사용 "
+            "(반환값의 table_shapes 가 그 좌표계). 렌더 실패 메시지를 받으면 규칙에 "
+            "맞춰 **1회만** 재작성."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "출력 절대경로 (.docx 또는 .xlsx — 확장자가 렌더러 선택)",
+                },
+                "markdown": {
+                    "type": "string",
+                    "description": ".docx 용 본문 (제약된 markdown 서브셋)",
+                },
+                "sheets": {
+                    "type": "array",
+                    "description": ".xlsx 용 sheet spec 리스트",
+                    "items": {"type": "object"},
+                },
+                "lang": {
+                    "type": "string",
+                    "default": "ko",
+                    "description": "기본 폰트 스택 (ko → 맑은 고딕)",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "기존 파일 덮어쓰기 허용",
+                },
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 
@@ -794,6 +848,33 @@ def diff_documents(path_a: str, path_b: str) -> dict[str, Any]:
     return _diff(path_a, path_b)
 
 
+def create_document(path: str, markdown: str | None = None,
+                    sheets: list[dict[str, Any]] | None = None,
+                    lang: str = "ko", overwrite: bool = False) -> dict[str, Any]:
+    from .generate import create_document as _create
+
+    out = _create(path, markdown=markdown, sheets=sheets,
+                  lang=lang, overwrite=overwrite)
+
+    # 생성 직후 좌표 피드백 — LLM 이 후속 편집(set_cell/insert_row)을
+    # inspect_document 재호출 없이 바로 이어갈 수 있게 표 요약을 돌려준다.
+    doc = load(out)
+    try:
+        tables = doc.get_tables()
+        summary = {
+            "tables": len(tables),
+            "table_shapes": [f"{t.rows}x{t.cols}" for t in tables],
+        }
+    finally:
+        doc.close()
+
+    return {
+        "output_path": str(out),
+        "format": out.suffix.lstrip("."),
+        **summary,
+    }
+
+
 def fill_form(path: str, data: dict[str, str],
               direction: str = "auto", strict: bool = False,
               output_path: str | None = None) -> dict[str, Any]:
@@ -831,6 +912,7 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_form_controls": get_form_controls,
     "set_form_control": set_form_control,
     "diff_documents": diff_documents,
+    "create_document": create_document,
 }
 
 

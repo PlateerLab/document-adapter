@@ -221,7 +221,7 @@ resp = client.messages.create(
 
 ## 노출되는 도구
 
-총 **12 개** 도구 (DOCX/PPTX/HWPX/XLSX 공통, 확장자로 자동 디스패치):
+총 **17 개** 도구 (DOCX/PPTX/HWPX/XLSX 공통, 확장자로 자동 디스패치):
 
 | 도구 | 설명 |
 |---|---|
@@ -231,10 +231,47 @@ resp = client.messages.create(
 | `set_cell` | 특정 표의 `(row, col)` 셀 값 교체 (병합 anchor만) |
 | `append_to_cell` | 기존 텍스트 뒤에 값 덧붙임 (라벨 유지용, 예: `"성 명"` → `"성 명  홍길동"`) |
 | `fill_form` (v0.7+) | **라벨 이름**으로 일괄 채우기. 좌표 계산 없이 `{"접수번호": "...", "성명": "..."}` dict. dot-path 섹션 해소 + `overflow_warnings` |
-| `append_row` | 표 끝에 새 행 추가 (전 포맷, v0.5+) |
+| `append_row` | 표에 새 행 추가 (전 포맷, v0.5+). v0.14: `insert_row`/`insert_column` 어댑터 API 로 위치 지정 삽입 + 서식 상속 |
+| `create_document` (v0.15) | **새 문서 생성** — .docx 는 제약된 markdown, .xlsx 는 sheet spec 을 결정적 렌더러가 스타일 잡힌 문서로 변환. 생성 직후 기존 편집 도구와 같은 좌표계로 이어짐 |
+| `get_text_map` / `find_text` / `replace_text` / `insert_text` (v0.13, DOCX/HWPX) | 표 밖 본문 텍스트 지도·검색·치환·삽입 (run 분할 무관, 서식 보존) |
 | `get_shapes` / `set_shape_text` (v0.8, PPTX) | 표 외 shape(textbox/placeholder/도형) 텍스트 조회·편집 |
 | `get_form_controls` / `set_form_control` (v0.10, HWPX) | 폼 컨트롤(체크박스·라디오·에디트·콤보) 조회·설정 |
 | `diff_documents` (v0.11) | 두 문서(편집 전/후)를 셀 단위 비교 → 변경 셀 before/after + `overflow_risk`. **편집 후 검증용** |
+
+### 새 문서 생성 (v0.15+)
+
+```python
+from document_adapter import create_document, load
+
+# DOCX — LLM 은 제약된 markdown 만 쓰면 된다 (OOXML 대비 토큰 ~96% 절감)
+create_document("회의록.docx", lang="ko", markdown="""
+# 주간 회의록
+
+| 이름 | 부서 |
+|---|---|
+| 김경윤 | AI플랫폼 |
+
+- 결정: v0.15 배포
+""")
+
+# XLSX — sheet spec (숫자는 숫자로, `=` 는 살아있는 수식)
+create_document("매출.xlsx", sheets=[
+    {"name": "매출 요약", "headers": ["분기", "매출(억원)"],
+     "rows": [["1분기", 120], ["합계", "=SUM(B2:B2)"]],
+     "number_formats": {"B": "#,##0"}},
+])
+
+# 생성-편집 왕복: 생성 직후 같은 좌표계로 편집 가능
+doc = load("회의록.docx")
+doc.insert_row(0, ["유지수", "기획"], at_row=2)   # 표에 행 추가
+doc.save(); doc.close()
+```
+
+지원 markdown 서브셋: `#`~`######` 헤딩 · 문단 · `-` 불릿 · `1.` 번호 ·
+`**굵게**` `*기울임*` `` `코드` `` · 파이프 표 · `>` 인용 · `---` 수평선 ·
+코드펜스. (HTML/이미지/각주/중첩 리스트는 미지원 — 일반 텍스트로 관용 처리.
+정교한 양식은 생성이 아니라 **기존 템플릿 편집**이 이 라이브러리의 철학입니다.)
+HWPX 생성은 v0.16 예정.
 
 ### `inspect_document` 반환 예시 (v0.2+)
 
