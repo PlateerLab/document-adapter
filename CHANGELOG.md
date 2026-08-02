@@ -7,6 +7,87 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-30
+
+**PPTX shape 단위 복사** — 슬라이드 전체(duplicate_slide)가 아니라 특정
+표/차트/텍스트박스 **하나만** 골라 다른 슬라이드로 복사한다. "이 차트를 저
+페이지에도" / "이 표 양식만 베껴서" 류 요청 처리.
+
+### Added
+- **`copy_shape(target_slide_index, *, table_index | source_slide_index+shape_id,
+  x_cm, y_cm, clear_values)`** — shape 단위 복사 (같은 파일 내, 서식·스타일 유지).
+  - 표는 `table_index`, 차트/텍스트박스는 `source_slide_index`+`shape_id` 로 지정.
+  - `clear_values=True`: 복사본의 표 셀/텍스트 run 값을 비움 (서식·구조 유지 —
+    "양식만 베끼기"). 차트는 데이터 유지 복사 (수치는 set_chart_data 로).
+  - 차트 part + 내장 워크북 독립 복제 (duplicate_slide 와 동일 — 복사본 편집이
+    원본에 영향 없음).
+  - placeholder 복사 시 위치/크기를 실측값으로 고정한 일반 shape 로 전환
+    (`<p:ph>` 제거) — 대상 슬라이드의 placeholder 와 idx 충돌 방지.
+  - cNvPr id 를 대상 슬라이드 내 유일값으로 재부여 (그룹 내부 포함).
+  - 반환: 새 shape_id / (표) 재계산된 table_index + preview(행 라벨) /
+    (차트) chart_type + set_chart_data 힌트 — 곧장 후속 편집 가능.
+- MCP/Claude 도구 **`copy_shape`** 추가 (총 23개).
+
+### Notes
+- 같은 파일 내 복사만 지원 — 다른 pptx 파일에서 가져오는 크로스 파일 복사는
+  테마/tableStyles 병합이 필요해 미지원 (시도 시 별도 파일을 열어야 하므로
+  API 상 표현 불가).
+- 그룹 내부 shape 는 단독 복사 불가 — 그룹 전체 shape_id 로 복사.
+
+## [0.17.1] — 2026-07-30
+
+### Fixed
+- `duplicate_slide` 반환의 `tables[]` 에 **`preview`(행 라벨 포함) 추가** —
+  LLM 이 복제본 표를 채울 때 행 매핑을 기억/추측하다 값이 한 행씩 밀리는
+  off-by-one 실패 패턴 방지 (실측: "프로젝트명 행에 담당자 값" 오기입).
+  도구 설명에도 "preview 라벨을 확인해 (row, col) 결정 — 추측 금지" 명시.
+
+## [0.17.0] — 2026-07-30
+
+**PPTX 차트 편집 + 슬라이드 복제** — 표/텍스트만 다루던 PPTX 어댑터에
+차트 계층과 슬라이드(페이지) 계층을 추가. "덱 안의 양식 페이지를 복제해
+새 페이지를 만들고, 표·텍스트·차트 수치를 채우는" 보고서 워크플로가
+도구만으로 완결된다. 신규 의존성 없음.
+
+### Added
+- **`get_charts(slide_index=None)`** — 차트 목록 + 카테고리/시리즈 수치.
+  차트는 `get_tables`/`get_shapes` 에 나타나지 않으므로 차트 작업의 유일한
+  진입점. 그룹 shape 안의 차트도 수집. 편집 불가 구조(scatter/bubble·
+  날짜축·다중레벨 카테고리·콤보)는 `editable=false` + `warning` 으로 표시.
+- **`set_chart_data(slide_index, shape_id, ...)`** — 차트 수치 편집
+  (read → 수정 → `replace_data`, 서식/색/축/범례 보존). 두 모드:
+  `set_points`(시리즈/카테고리를 **이름**으로 지정하는 부분 수정) /
+  `categories`+`series`(전체 교체 — 카테고리·시리즈 개수 변경 포함).
+  `title` 단독 지정으로 제목만 변경 가능. 반환에 before/after 스냅샷.
+- **`add_chart(slide_index, chart_type, ...)`** — 새 차트 추가 (column/bar/
+  line/pie/doughnut/area/radar 계열 11종). 위치·크기(cm) 생략 시 결정적
+  기본 배치, 시리즈 2개 이상이면 하단 범례 자동.
+- **`get_slides()`** — 슬라이드 개요(레이아웃/제목/표·차트·텍스트 개수) —
+  복제할 '양식 페이지' 를 고르는 눈.
+- **`duplicate_slide(source_slide_index, at=None)`** — 양식 슬라이드 복제 +
+  위치 지정 삽입. 서식/표/이미지 유지, **차트는 chart part + 내장 워크북을
+  독립 복제**해 복제본 편집이 원본을 오염시키지 않음. 반환에 새 슬라이드의
+  표/차트/텍스트 좌표(삽입 후 재계산) — 곧장 후속 편집 가능. 중간 삽입 시
+  전역 `table_index` 시프트 warning 포함. 노트 슬라이드는 미복제.
+- MCP/Claude 도구 5종 추가 (총 22개): `get_charts` / `set_chart_data` /
+  `add_chart` / `get_slides` / `duplicate_slide`.
+- `inspect_document`(PPTX): `chart_summary`(차트 존재 + set_chart_data 유도
+  힌트, 수치는 미포함 — 토큰 절약) 와 `slide_count` 추가.
+- `diff_documents`: 차트 수치 변경을 `chart_changes` / `charts_added` /
+  `charts_removed` 로 보고 (차트 없는 문서는 키 생략 — 기존 반환 형태 보존).
+
+### Notes
+- `set_chart_data` 는 python-pptx `replace_data` 기반 — 차트 XML 캐시와
+  내장 워크북을 함께 갱신하지만, 내장 워크북의 차트 외 시트/수식은 보존되지
+  않는다 (python-pptx 의 알려진 동작).
+- 3D/stock/surface 차트 생성은 미지원 (python-pptx 한계). scatter/bubble
+  편집은 v2 후보.
+- `diff_documents` 의 표/차트 매칭은 위치 기준(flat index / slide_index) —
+  슬라이드·표 **삽입/삭제를 동반한** 비교에서는 밀린 위치끼리 비교될 수 있다
+  (셀/수치 편집 전후 검증 용도로 설계됨. 삽입 후 검증은 duplicate_slide
+  반환 좌표를 사용할 것).
+- eval 하니스의 차트 채점(FieldExpectation 확장)은 known gap — v0.18 후보.
+
 ## [0.16.0] — 2026-07-13
 
 **생성 대상 확장 — .pptx / .hwpx** — v0.15 의 docx/xlsx 생성 계층을

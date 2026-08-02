@@ -18,6 +18,9 @@
 |---|---|---|---|---|---|---|---|
 | `.docx` | `docxtpl` + `python-docx` | Jinja2 (`{%tr%}` loop 포함) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `.pptx` | `python-pptx` + 자체 lxml 확장 | `{{key}}` 치환 | ✅ (슬라이드 위치 포함) | ✅ | — (포맷 미지원) | ✅ | ✅ (v0.5+) |
+
+- **PPTX 차트 (v0.17+)**: `get_charts` / `set_chart_data`(수치 편집, 서식 보존) / `add_chart`(column/bar/line/pie/doughnut/area/radar 계열). scatter·bubble·날짜축·콤보 차트는 읽기 전용(`editable=false`).
+- **PPTX 슬라이드 (v0.17+)**: `get_slides`(페이지 개요) / `duplicate_slide`(양식 페이지 복제 — 차트 포함 시 chart part + 내장 워크북까지 독립 복제, 노트는 미복제).
 | `.hwpx` | 자체 `hwpx_core` (lxml + zipfile) | `{{key}}` 치환 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `.xlsx` | `openpyxl` | `{{key}}` 치환 | ✅ (시트 = 표) | ✅ | — | ✅ | ✅ |
 
@@ -235,6 +238,9 @@ resp = client.messages.create(
 | `create_document` (v0.15) | **새 문서 생성** — .docx 는 제약된 markdown, .xlsx 는 sheet spec 을 결정적 렌더러가 스타일 잡힌 문서로 변환. 생성 직후 기존 편집 도구와 같은 좌표계로 이어짐 |
 | `get_text_map` / `find_text` / `replace_text` / `insert_text` (v0.13, DOCX/HWPX) | 표 밖 본문 텍스트 지도·검색·치환·삽입 (run 분할 무관, 서식 보존) |
 | `get_shapes` / `set_shape_text` (v0.8, PPTX) | 표 외 shape(textbox/placeholder/도형) 텍스트 조회·편집 |
+| `get_charts` / `set_chart_data` / `add_chart` (v0.17, PPTX) | **차트** 데이터 조회·수치 편집·새 차트 추가. 차트는 tables/shapes 에 안 잡히므로 `get_charts` 가 유일한 진입점. `set_points` 로 이름 기반 부분 수정, 서식(색/축/범례) 보존 |
+| `get_slides` / `duplicate_slide` (v0.17, PPTX) | 슬라이드(페이지) 개요 조회 + **양식 슬라이드 복제**(표/차트/이미지 유지, 차트 데이터 독립 복제). 반환 좌표로 곧장 셀/텍스트/차트 편집 |
+| `copy_shape` (v0.18, PPTX) | 특정 **표/차트/텍스트박스 하나만** 다른 슬라이드로 복사 (서식 유지, 같은 파일 내). `clear_values` 로 값만 비운 "빈 양식" 복사 가능, 차트는 독립 복제 후 `set_chart_data` 로 수치 변경 |
 | `get_form_controls` / `set_form_control` (v0.10, HWPX) | 폼 컨트롤(체크박스·라디오·에디트·콤보) 조회·설정 |
 | `diff_documents` (v0.11) | 두 문서(편집 전/후)를 셀 단위 비교 → 변경 셀 before/after + `overflow_risk`. **편집 후 검증용** |
 
@@ -376,7 +382,7 @@ document_adapter/
 │   ├── package.py     # ZIP + dirty XML 관리
 │   ├── grid.py        # iter_grid, table_shape
 │   └── paragraph.py   # run-level 편집 헬퍼
-├── tools.py           # 7개 MCP 도구 정의 + call_tool dispatcher
+├── tools.py           # 23개 MCP 도구 정의 + call_tool dispatcher
 └── mcp_server.py      # MCP stdio server
 
 examples/

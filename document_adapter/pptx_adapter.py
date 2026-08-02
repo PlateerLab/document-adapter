@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import re
 import warnings
 from copy import deepcopy
@@ -15,15 +16,22 @@ from typing import Any, Iterator
 
 from lxml import etree
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.util import Emu
 
 from .base import (
     CellContent,
     CellOutOfBoundsError,
+    ChartInfo,
     DocumentAdapter,
     MergeInfo,
     MergedCellWriteError,
     NotImplementedForFormat,
     ShapeInfo,
+    SlideInfo,
     TableIndexError,
     TableSchema,
     _has_template,
@@ -31,9 +39,149 @@ from .base import (
 
 TAG_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
 # OOXML EMU (English Metric Unit) → cm: 1 cm = 360000 EMU
 _EMU_PER_CM = 360000
+
+# LLM 친화 문자열 → XL_CHART_TYPE (v1: category 계열만 — scatter/bubble/3D 는
+# 데이터 모델이 달라 편집 계약이 흔들리므로 제외. base.ChartInfo docstring 참조).
+_CHART_TYPE_MAP: dict[str, Any] = {
+    "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
+    "column_stacked": XL_CHART_TYPE.COLUMN_STACKED,
+    "bar": XL_CHART_TYPE.BAR_CLUSTERED,
+    "bar_stacked": XL_CHART_TYPE.BAR_STACKED,
+    "line": XL_CHART_TYPE.LINE,
+    "line_markers": XL_CHART_TYPE.LINE_MARKERS,
+    "pie": XL_CHART_TYPE.PIE,
+    "doughnut": XL_CHART_TYPE.DOUGHNUT,
+    "area": XL_CHART_TYPE.AREA,
+    "area_stacked": XL_CHART_TYPE.AREA_STACKED,
+    "radar": XL_CHART_TYPE.RADAR,
+}
+
+# add_chart 기본 배치 (cm) — 제목 아래 전폭 (pptx_writer 의 결정적 배치 원칙)
+_CHART_DEFAULT_X_CM = 1.5
+_CHART_DEFAULT_Y_CM = 3.5
+
+
+def _iter_shapes_recursive(shapes: Any) -> Iterator[Any]:
+    """그룹 shape 안까지 재귀 순회 (차트/집계는 그룹 내부도 봐야 한다)."""
+    for shape in shapes:
+        yield shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_shapes_recursive(shape.shapes)
+
+
+def _to_number(v: Any) -> float | int | None:
+    """차트 값 정규화. None 허용, 문자열은 콤마 제거 후 float 시도."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError(
+            f"chart value must be a number, got bool {v!r}. "
+            f"차트 값은 숫자여야 합니다 (bool 불가)."
+        )
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.replace(",", "").strip()
+        try:
+            return float(s)
+        except ValueError:
+            pass
+    raise ValueError(
+        f"not a number: {v!r} — remove units/commas and pass a number. "
+        f"숫자가 아닌 값입니다: {v!r} — 단위/콤마를 제거하고 숫자로 전달하세요."
+    )
+
+
+def _resolve_index(key: Any, names: list[str], what: str) -> int:
+    """이름 우선, 정수 인덱스 허용으로 시리즈/카테고리를 좌표로 해소."""
+    if isinstance(key, bool) or key is None:
+        raise ValueError(f"{what} must be a name or 0-based index, got {key!r}")
+    if isinstance(key, int):
+        if 0 <= key < len(names):
+            return key
+        raise ValueError(
+            f"{what} index {key} out of range 0..{len(names) - 1}"
+        )
+    k = str(key).strip()
+    matches = [i for i, n in enumerate(names) if (n or "").strip() == k]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(
+            f"{what} not found: {key!r}. candidates: {names}. "
+            f"{what} 이름을 찾지 못했습니다 — 후보 중에서 고르거나 인덱스를 쓰세요."
+        )
+    raise ValueError(
+        f"{what} name {key!r} is ambiguous (indices {matches}); "
+        f"use an integer index instead."
+    )
+
+
+def _validate_series(series: Any, categories: list[str]) -> list[dict[str, Any]]:
+    """series 인자 검증/정규화: [{"name", "values"}], 길이 == 카테고리 수."""
+    if not isinstance(series, (list, tuple)) or not series:
+        raise ValueError(
+            "series must be a non-empty list of {name, values}. "
+            "series 는 {name, values} dict 의 비어있지 않은 리스트여야 합니다."
+        )
+    out: list[dict[str, Any]] = []
+    for i, s in enumerate(series):
+        if not isinstance(s, dict) or "values" not in s:
+            raise ValueError(
+                f"series[{i}] must be a dict with 'name' and 'values'."
+            )
+        name = str(s.get("name") or f"Series {i + 1}")
+        vals = s["values"]
+        if not isinstance(vals, (list, tuple)):
+            raise ValueError(f"series[{i}].values must be a list of numbers")
+        if len(vals) != len(categories):
+            raise ValueError(
+                f"series[{i}] ({name!r}) has {len(vals)} values but there are "
+                f"{len(categories)} categories. "
+                f"값 개수({len(vals)})가 카테고리 수({len(categories)})와 다릅니다."
+            )
+        out.append({"name": name, "values": [_to_number(v) for v in vals]})
+    return out
+
+
+def _clone_part(part: Any) -> Any:
+    """OPC part 를 같은 클래스/blob 으로 새 partname 에 복제.
+
+    관계(rels)는 원본과 같은 rId 오름차순으로 재생성한다 — 빈 rels 에서
+    시작하므로 동일한 rId 가 부여되어, blob 안의 ``r:id`` 참조를 재작성하지
+    않아도 유효하다. 차트 part 의 내장 xlsx(``RT.PACKAGE``)는 재귀 복제해
+    복제본 차트의 데이터 편집이 원본을 오염시키지 않게 한다.
+    """
+    pkg = part.package
+    partname = str(part.partname)
+    base, ext = partname.rsplit(".", 1)
+    tmpl = base.rstrip("0123456789") + "%d." + ext
+    new_name = pkg.next_partname(tmpl)
+    new_part = type(part).load(new_name, part.content_type, pkg, part.blob)
+    for rid in sorted(part.rels, key=lambda r: int(r[3:])):
+        rel = part.rels[rid]
+        if rel.is_external:
+            new_rid = new_part.rels.get_or_add_ext_rel(
+                rel.reltype, rel.target_ref
+            )
+        else:
+            target = rel.target_part
+            if rel.reltype == RT.PACKAGE:
+                target = _clone_part(target)
+            new_rid = new_part.relate_to(target, rel.reltype)
+        if new_rid != rid:
+            # rId 재현 가정이 깨진 문서 — 조용한 참조 오염 대신 명시적 거부.
+            raise NotImplementedForFormat(
+                f"cannot safely clone part {partname}: relationship id "
+                f"mismatch ({new_rid} != {rid}). "
+                f"이 문서의 관계 구조는 안전한 복제를 지원하지 않습니다."
+            )
+    return new_part
 
 
 def _emu_to_cm(emu: Any) -> float | None:
@@ -344,6 +492,693 @@ class PptxAdapter(DocumentAdapter):
         raise ValueError(
             f"shape not found: slide_index={slide_index}, shape_id={shape_id}"
         )
+
+    # ---- charts (v0.17+) ----
+
+    def _read_chart(
+        self, chart: Any
+    ) -> tuple[list[str], list[dict[str, Any]], bool, str | None]:
+        """(categories, series, editable, warning) — 절대 예외를 밖으로 내지 않는다.
+
+        get_charts 와 set_chart_data 의 before/after 스냅샷이 공용으로 사용.
+        편집 불가 구조(콤보/다중레벨 카테고리/날짜축/scatter·bubble)는
+        editable=False + 이유(warning)로 표시한다.
+        """
+        editable = True
+        warning: str | None = None
+
+        def _mark(msg: str) -> None:
+            nonlocal editable, warning
+            editable = False
+            if warning is None:
+                warning = msg
+
+        cats: list[str] = []
+        sers: list[dict[str, Any]] = []
+        try:
+            plots = list(chart.plots)
+        except Exception as e:  # noqa: BLE001 — 미지원 차트도 목록엔 나와야 함
+            return [], [], False, f"cannot read chart plots: {e}"
+        if len(plots) != 1:
+            _mark(f"combo chart with {len(plots)} plots — editing not supported")
+        if plots:
+            try:
+                cat_obj = plots[0].categories
+                if getattr(cat_obj, "depth", 1) > 1:
+                    _mark("multi-level categories — editing not supported")
+                raw = list(cat_obj)
+                if any(isinstance(c, (datetime.date, datetime.datetime))
+                       for c in raw):
+                    _mark("date-axis categories — editing not supported")
+                cats = ["" if c is None else str(c) for c in raw]
+            except Exception as e:  # noqa: BLE001
+                _mark(f"cannot read categories: {e}")
+        try:
+            ctname = chart.chart_type.name
+            if ctname.startswith(("XY_", "BUBBLE")):
+                _mark(f"{ctname} charts are read-only (v1)")
+        except Exception:  # noqa: BLE001
+            _mark("unknown chart type")
+        try:
+            for i, ser in enumerate(chart.series):
+                try:
+                    name = str(ser.name)
+                except Exception:  # noqa: BLE001
+                    name = f"Series {i + 1}"
+                try:
+                    values = list(ser.values)
+                except Exception as e:  # noqa: BLE001
+                    values = []
+                    _mark(f"cannot read series values: {e}")
+                sers.append({"name": name, "values": values})
+        except Exception as e:  # noqa: BLE001
+            _mark(f"cannot read series: {e}")
+        return cats, sers, editable, warning
+
+    def get_charts(self, slide_index: int | None = None) -> list[ChartInfo]:
+        """차트 목록 + 데이터. ``slide_index`` 는 1-based, None 이면 전체.
+
+        차트는 get_tables/get_shapes 에 나타나지 않으므로 차트 작업의 진입점은
+        항상 이 메서드다. 그룹 shape 안의 차트도 수집한다.
+        """
+        out: list[ChartInfo] = []
+        for s_idx, slide in enumerate(self._prs.slides, 1):
+            if slide_index is not None and s_idx != slide_index:
+                continue
+            for shape in _iter_shapes_recursive(slide.shapes):
+                if not getattr(shape, "has_chart", False):
+                    continue
+                chart = shape.chart
+                try:
+                    ctype = chart.chart_type.name
+                except Exception:  # noqa: BLE001
+                    ctype = "UNKNOWN"
+                title = None
+                try:
+                    if chart.has_title:
+                        title = chart.chart_title.text_frame.text or None
+                except Exception:  # noqa: BLE001
+                    pass
+                cats, sers, editable, warning = self._read_chart(chart)
+                out.append(ChartInfo(
+                    slide_index=s_idx,
+                    shape_id=shape.shape_id,
+                    name=shape.name,
+                    chart_type=ctype,
+                    title=title,
+                    categories=cats,
+                    series=sers,
+                    editable=editable,
+                    warning=warning,
+                ))
+        return out
+
+    def _find_chart(self, slide_index: int, shape_id: int) -> Any:
+        """(slide_index, shape_id) 로 chart 객체 탐색. 실패는 ValueError."""
+        slides = list(self._prs.slides)
+        if slide_index < 1 or slide_index > len(slides):
+            raise ValueError(
+                f"slide_index {slide_index} out of range 1..{len(slides)}"
+            )
+        for shape in _iter_shapes_recursive(slides[slide_index - 1].shapes):
+            if shape.shape_id != shape_id:
+                continue
+            if not getattr(shape, "has_chart", False):
+                raise ValueError(
+                    f"shape {shape_id} on slide {slide_index} is not a chart "
+                    f"(use get_charts to list chart shape_ids)"
+                )
+            return shape.chart
+        raise ValueError(
+            f"chart not found: slide_index={slide_index}, shape_id={shape_id}"
+        )
+
+    def set_chart_data(
+        self,
+        slide_index: int,
+        shape_id: int,
+        *,
+        categories: list[str] | None = None,
+        series: list[dict[str, Any]] | None = None,
+        set_points: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """차트 데이터 편집 — read → 수정 → replace_data (서식 보존).
+
+        모드/검증 규칙은 base.DocumentAdapter.set_chart_data docstring 참조.
+        """
+        chart = self._find_chart(slide_index, shape_id)
+        cats, sers, editable, warning = self._read_chart(chart)
+
+        if series is None and set_points is None and title is None:
+            raise ValueError(
+                "nothing to change: pass series, set_points, or title. "
+                "변경할 내용이 없습니다 — series/set_points/title 중 하나를 전달하세요."
+            )
+        if series is not None and set_points is not None:
+            raise ValueError(
+                "pass either series or set_points, not both. "
+                "series 와 set_points 는 동시에 줄 수 없습니다."
+            )
+        if set_points is not None and categories is not None:
+            raise ValueError(
+                "categories cannot be combined with set_points — use the "
+                "full-replace mode (categories + series) to change categories. "
+                "카테고리 변경은 전체 교체 모드(categories+series)를 사용하세요."
+            )
+        if (series is not None or set_points is not None) and not editable:
+            raise NotImplementedForFormat(
+                f"this chart cannot be edited: {warning}. "
+                f"이 차트는 데이터 편집을 지원하지 않습니다: {warning}"
+            )
+
+        before = {
+            "categories": list(cats),
+            "series": [dict(s, values=list(s["values"])) for s in sers],
+        }
+
+        new_cats: list[str] | None = None
+        new_sers: list[dict[str, Any]] | None = None
+        if series is not None:
+            new_cats = ([str(c) for c in categories]
+                        if categories is not None else list(cats))
+            if not new_cats:
+                raise ValueError(
+                    "chart has no categories — pass categories explicitly. "
+                    "카테고리가 없습니다 — categories 를 명시하세요."
+                )
+            new_sers = _validate_series(series, new_cats)
+        elif set_points is not None:
+            if not isinstance(set_points, (list, tuple)) or not set_points:
+                raise ValueError(
+                    "set_points must be a non-empty list of "
+                    "{series, category, value}."
+                )
+            new_cats = list(cats)
+            new_sers = [dict(s, values=list(s["values"])) for s in sers]
+            ser_names = [s["name"] for s in new_sers]
+            for j, pt in enumerate(set_points):
+                if not isinstance(pt, dict):
+                    raise ValueError(f"set_points[{j}] must be a dict")
+                si = _resolve_index(pt.get("series"), ser_names, "series")
+                ci = _resolve_index(pt.get("category"), new_cats, "category")
+                new_sers[si]["values"][ci] = _to_number(pt.get("value"))
+
+        if new_sers is not None:
+            cd = CategoryChartData()
+            cd.categories = new_cats
+            for s in new_sers:
+                cd.add_series(s["name"], tuple(s["values"]))
+            chart.replace_data(cd)
+
+        if title is not None:
+            chart.has_title = True
+            chart.chart_title.text_frame.text = title
+
+        a_cats, a_sers, _, _ = self._read_chart(chart)
+        try:
+            ctype = chart.chart_type.name
+        except Exception:  # noqa: BLE001
+            ctype = "UNKNOWN"
+        result: dict[str, Any] = {
+            "slide_index": slide_index,
+            "shape_id": shape_id,
+            "chart_type": ctype,
+            "before": before,
+            "after": {"categories": a_cats, "series": a_sers},
+        }
+        if title is not None:
+            result["title"] = title
+        return result
+
+    def add_chart(
+        self,
+        slide_index: int,
+        chart_type: str,
+        *,
+        categories: list[str],
+        series: list[dict[str, Any]],
+        title: str | None = None,
+        x_cm: float | None = None,
+        y_cm: float | None = None,
+        width_cm: float | None = None,
+        height_cm: float | None = None,
+    ) -> dict[str, Any]:
+        """슬라이드에 새 차트 추가. 위치 생략 시 제목 아래 전폭 배치."""
+        slides = list(self._prs.slides)
+        if slide_index < 1 or slide_index > len(slides):
+            raise ValueError(
+                f"slide_index {slide_index} out of range 1..{len(slides)}"
+            )
+        slide = slides[slide_index - 1]
+
+        key = str(chart_type).strip().lower()
+        xl_type = _CHART_TYPE_MAP.get(key)
+        if xl_type is None:
+            raise ValueError(
+                f"unsupported chart_type {chart_type!r}. "
+                f"supported: {sorted(_CHART_TYPE_MAP)}. "
+                f"지원하지 않는 차트 타입입니다 — 지원 목록에서 고르세요."
+            )
+        if not categories:
+            raise ValueError(
+                "categories must be a non-empty list. "
+                "categories 는 비어있지 않은 리스트여야 합니다."
+            )
+        cats = [str(c) for c in categories]
+        sers = _validate_series(series, cats)
+
+        x = x_cm if x_cm is not None else _CHART_DEFAULT_X_CM
+        y = y_cm if y_cm is not None else _CHART_DEFAULT_Y_CM
+        slide_w_cm = int(self._prs.slide_width or 0) / _EMU_PER_CM
+        slide_h_cm = int(self._prs.slide_height or 0) / _EMU_PER_CM
+        w = width_cm if width_cm is not None else max(slide_w_cm - 2 * x, 2.0)
+        h = height_cm if height_cm is not None else max(slide_h_cm - y - 1.0, 2.0)
+
+        cd = CategoryChartData()
+        cd.categories = cats
+        for s in sers:
+            cd.add_series(s["name"], tuple(s["values"]))
+        gf = slide.shapes.add_chart(
+            xl_type,
+            Emu(int(x * _EMU_PER_CM)), Emu(int(y * _EMU_PER_CM)),
+            Emu(int(w * _EMU_PER_CM)), Emu(int(h * _EMU_PER_CM)),
+            cd,
+        )
+        chart = gf.chart
+        if title:
+            chart.has_title = True
+            chart.chart_title.text_frame.text = title
+        if len(sers) > 1:
+            try:
+                chart.has_legend = True
+                chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+                chart.legend.include_in_layout = False
+            except Exception:  # noqa: BLE001 — 범례는 부가 기능, 실패해도 차트는 유효
+                pass
+        return {
+            "slide_index": slide_index,
+            "shape_id": gf.shape_id,
+            "chart_type": xl_type.name,
+            "categories": cats,
+            "series_names": [s["name"] for s in sers],
+        }
+
+    # ---- slides (v0.17+) ----
+
+    def get_slides(self) -> list[SlideInfo]:
+        """슬라이드 개요 목록 — 복제/편집할 '양식 페이지' 를 고르는 눈."""
+        out: list[SlideInfo] = []
+        for s_idx, slide in enumerate(self._prs.slides, 1):
+            shapes = list(_iter_shapes_recursive(slide.shapes))
+            n_tables = sum(
+                1 for s in shapes if getattr(s, "has_table", False))
+            n_charts = sum(
+                1 for s in shapes if getattr(s, "has_chart", False))
+            text_shapes = [
+                s for s in shapes
+                if getattr(s, "has_text_frame", False)
+                and (s.text_frame.text or "").strip()
+            ]
+            title: str | None = None
+            for s in shapes:
+                if not getattr(s, "is_placeholder", False):
+                    continue
+                try:
+                    if (s.placeholder_format.idx == 0
+                            and getattr(s, "has_text_frame", False)):
+                        title = (s.text_frame.text or "").strip()[:40] or None
+                        break
+                except ValueError:
+                    continue
+            if title is None and text_shapes:
+                title = (text_shapes[0].text_frame.text or "").strip()[:40] or None
+            try:
+                layout_name = slide.slide_layout.name or ""
+            except Exception:  # noqa: BLE001
+                layout_name = ""
+            out.append(SlideInfo(
+                slide_index=s_idx,
+                layout_name=layout_name,
+                title=title,
+                shape_count=len(shapes),
+                table_count=n_tables,
+                chart_count=n_charts,
+                text_shape_count=len(text_shapes),
+                texts_preview=[
+                    (s.text_frame.text or "").strip()[:40]
+                    for s in text_shapes[:5]
+                ],
+            ))
+        return out
+
+    def duplicate_slide(
+        self,
+        source_slide_index: int,
+        at: int | None = None,
+    ) -> dict[str, Any]:
+        """양식 슬라이드 복제 — 같은 레이아웃의 빈 슬라이드에 shape XML 을
+        deepcopy 하고 관계(rId)를 재매핑한다. 차트 part 는 내장 워크북까지
+        독립 복제해 복제본 편집이 원본을 오염시키지 않는다.
+
+        노트 슬라이드는 복제하지 않는다 (v1 계약).
+        """
+        slides = list(self._prs.slides)
+        n = len(slides)
+        if source_slide_index < 1 or source_slide_index > n:
+            raise ValueError(
+                f"source_slide_index {source_slide_index} out of range 1..{n}"
+            )
+        if at is not None and (at < 1 or at > n + 1):
+            raise ValueError(f"at {at} out of range 1..{n + 1}")
+
+        source = slides[source_slide_index - 1]
+        new_slide = self._prs.slides.add_slide(source.slide_layout)
+
+        # add_slide 가 레이아웃에서 자동 생성한 placeholder 제거 — 원본 shape 로 대체
+        for shp in list(new_slide.shapes):
+            shp._element.getparent().remove(shp._element)
+
+        # 원본 slide 의 관계 재생성 + {구 rId → 새 rId} 맵
+        id_map: dict[str, str] = {}
+        for rid in sorted(source.part.rels, key=lambda r: int(r[3:])):
+            rel = source.part.rels[rid]
+            if rel.reltype in (RT.SLIDE_LAYOUT, RT.NOTES_SLIDE):
+                continue  # layout 은 add_slide 가 연결함. 노트는 v1 미복제.
+            if rel.is_external:
+                id_map[rid] = new_slide.part.rels.get_or_add_ext_rel(
+                    rel.reltype, rel.target_ref
+                )
+            else:
+                target = rel.target_part
+                if rel.reltype == RT.CHART:
+                    target = _clone_part(target)
+                id_map[rid] = new_slide.part.relate_to(target, rel.reltype)
+
+        # shape XML deepcopy + r:* 참조 재매핑
+        r_prefix = f"{{{_R_NS}}}"
+        for shape in source.shapes:
+            el = deepcopy(shape._element)
+            for node in el.iter():
+                for attr, val in list(node.attrib.items()):
+                    if attr.startswith(r_prefix) and val in id_map:
+                        node.set(attr, id_map[val])
+            new_slide.shapes._spTree.append(el)
+
+        # 위치 지정: sldIdLst 에서 마지막(새) sldId 를 원하는 위치로 이동
+        new_index = n + 1
+        if at is not None and at <= n:
+            sldIdLst = self._prs.slides._sldIdLst
+            ids = list(sldIdLst)
+            new_id = ids[-1]
+            sldIdLst.remove(new_id)
+            sldIdLst.insert(at - 1, new_id)
+            new_index = at
+
+        # 좌표 피드백 — 삽입 *후* 좌표계로 재계산 (create_document 관례).
+        # preview(행 라벨 포함)를 함께 담는다 — LLM 이 복제본을 채울 때 행 매핑을
+        # 추측하다 off-by-one 으로 어긋나는 실패 패턴 방지 (라벨을 보고 좌표 결정).
+        previews = {
+            t.index: t.preview
+            for t in self.get_tables(preview_rows=10, max_cell_len=30)
+        }
+        tables = []
+        for g_idx, s_idx, table in self._iter_tables():
+            if s_idx != new_index:
+                continue
+            rows, cols = self._dimensions(table)
+            tables.append({
+                "table_index": g_idx,
+                "rows": rows,
+                "cols": cols,
+                "preview": previews.get(g_idx),
+            })
+        charts = [
+            {"shape_id": c.shape_id, "chart_type": c.chart_type}
+            for c in self.get_charts(slide_index=new_index)
+        ]
+        text_shapes = [
+            {"shape_id": s.shape_id, "name": s.name,
+             "text_preview": s.text_preview}
+            for s in self.get_shapes(slide_index=new_index, min_text_len=0)
+        ]
+        result: dict[str, Any] = {
+            "source_slide_index": source_slide_index,
+            "new_slide_index": new_index,
+            "slide_count": n + 1,
+            "tables": tables,
+            "charts": charts,
+            "text_shapes": text_shapes,
+        }
+        if at is not None and at <= n:
+            result["warning"] = (
+                "슬라이드가 중간에 삽입되어 뒤쪽 표들의 table_index 가 "
+                "변경되었습니다. 이전 inspect 결과의 table_index 를 신뢰하지 "
+                "말고 이 반환값과 재-inspect 결과를 사용하세요."
+            )
+        return result
+
+    # ---- shape copy (v0.18+) ----
+
+    def _find_table_shape(self, table_index: int) -> tuple[int, Any]:
+        """전역 flat table_index → (slide_index_1based, graphicFrame shape)."""
+        g_idx = 0
+        for s_idx, slide in enumerate(self._prs.slides, 1):
+            for shape in slide.shapes:
+                if getattr(shape, "has_table", False):
+                    if g_idx == table_index:
+                        return s_idx, shape
+                    g_idx += 1
+        raise TableIndexError(f"PPTX table index {table_index} not found")
+
+    def copy_shape(
+        self,
+        target_slide_index: int,
+        *,
+        source_slide_index: int | None = None,
+        shape_id: int | None = None,
+        table_index: int | None = None,
+        x_cm: float | None = None,
+        y_cm: float | None = None,
+        clear_values: bool = False,
+    ) -> dict[str, Any]:
+        """표/차트/텍스트박스 shape 하나를 다른 슬라이드로 복사 (서식 유지).
+
+        레시피는 duplicate_slide 의 shape 단위 축소판:
+        deepcopy → (placeholder 면 위치·크기 실측 고정 후 <p:ph> 제거) →
+        참조된 관계(rId)만 대상 슬라이드에 재생성 (차트는 part 독립 복제) →
+        cNvPr id 를 대상 슬라이드 내 유일값으로 재부여 → spTree append →
+        위치 적용 → (옵션) 값 비우기.
+        """
+        slides = list(self._prs.slides)
+        n = len(slides)
+        if target_slide_index < 1 or target_slide_index > n:
+            raise ValueError(
+                f"target_slide_index {target_slide_index} out of range 1..{n}"
+            )
+
+        # ---- 원본 shape 해소 ----
+        if (shape_id is None) == (table_index is None):
+            raise ValueError(
+                "pass exactly one of table_index (for tables) or "
+                "source_slide_index+shape_id (for charts/text shapes). "
+                "표는 table_index 로, 차트/텍스트박스는 "
+                "source_slide_index+shape_id 로 지정하세요 (동시 지정 불가)."
+            )
+        if table_index is not None:
+            src_s_idx, src_shape = self._find_table_shape(table_index)
+            if source_slide_index is not None and source_slide_index != src_s_idx:
+                raise ValueError(
+                    f"table {table_index} is on slide {src_s_idx}, "
+                    f"not slide {source_slide_index}"
+                )
+        else:
+            if source_slide_index is None:
+                raise ValueError(
+                    "shape_id requires source_slide_index. "
+                    "shape_id 지정 시 source_slide_index 도 필요합니다."
+                )
+            if source_slide_index < 1 or source_slide_index > n:
+                raise ValueError(
+                    f"source_slide_index {source_slide_index} out of range 1..{n}"
+                )
+            src_s_idx = source_slide_index
+            src_slide_obj = slides[src_s_idx - 1]
+            src_shape = None
+            for sh in src_slide_obj.shapes:
+                if sh.shape_id == shape_id:
+                    src_shape = sh
+                    break
+            if src_shape is None:
+                for sh in _iter_shapes_recursive(src_slide_obj.shapes):
+                    if sh.shape_id == shape_id:
+                        raise ValueError(
+                            f"shape {shape_id} is inside a group shape — "
+                            f"copy the group itself instead. "
+                            f"그룹 내부 shape 는 그룹 전체의 shape_id 로 복사하세요."
+                        )
+                raise ValueError(
+                    f"shape not found: slide_index={src_s_idx}, shape_id={shape_id}"
+                )
+
+        src_slide = slides[src_s_idx - 1]
+        target_slide = slides[target_slide_index - 1]
+
+        kind = (
+            "table" if getattr(src_shape, "has_table", False)
+            else "chart" if getattr(src_shape, "has_chart", False)
+            else "text" if getattr(src_shape, "has_text_frame", False)
+            else "other"
+        )
+
+        # placeholder 는 위치/크기를 레이아웃에서 상속할 수 있으므로, 복사 전에
+        # 실측값(python-pptx 가 상속 해소한 값)을 확보해 둔다.
+        eff: dict[str, Any] = {}
+        for attr in ("left", "top", "width", "height"):
+            try:
+                eff[attr] = getattr(src_shape, attr)
+            except Exception:  # noqa: BLE001
+                eff[attr] = None
+
+        el = deepcopy(src_shape._element)
+
+        # <p:ph> 제거 — placeholder 복사본이 대상 슬라이드의 placeholder 와
+        # idx 충돌하는 것을 방지 (일반 shape 로 전환, 위치는 아래서 고정).
+        ph_els = list(el.iter(f"{{{_P_NS}}}ph"))
+        for ph_el in ph_els:
+            parent = ph_el.getparent()
+            if parent is not None:
+                parent.remove(ph_el)
+
+        # 참조된 관계(rId)만 대상 슬라이드에 재생성 + 재매핑
+        r_prefix = f"{{{_R_NS}}}"
+        referenced: set[str] = set()
+        for node in el.iter():
+            for attr, val in node.attrib.items():
+                if attr.startswith(r_prefix):
+                    referenced.add(val)
+        id_map: dict[str, str] = {}
+        for rid in sorted(referenced):
+            if rid not in src_slide.part.rels:
+                continue
+            rel = src_slide.part.rels[rid]
+            if rel.is_external:
+                id_map[rid] = target_slide.part.rels.get_or_add_ext_rel(
+                    rel.reltype, rel.target_ref
+                )
+            else:
+                target_part = rel.target_part
+                if rel.reltype == RT.CHART:
+                    target_part = _clone_part(target_part)
+                id_map[rid] = target_slide.part.relate_to(
+                    target_part, rel.reltype
+                )
+        for node in el.iter():
+            for attr, val in list(node.attrib.items()):
+                if attr.startswith(r_prefix) and val in id_map:
+                    node.set(attr, id_map[val])
+
+        # cNvPr id 재부여 — 대상 슬라이드 내 유일 보장 (그룹이면 내부까지)
+        used_ids = {
+            int(c.get("id"))
+            for c in target_slide._element.iter(f"{{{_P_NS}}}cNvPr")
+            if (c.get("id") or "").isdigit()
+        }
+        next_id = max(used_ids, default=1) + 1
+        new_ids: list[int] = []
+        for c in el.iter(f"{{{_P_NS}}}cNvPr"):
+            c.set("id", str(next_id))
+            new_ids.append(next_id)
+            next_id += 1
+        if not new_ids:
+            raise NotImplementedForFormat(
+                "copied element has no cNvPr id — unsupported shape structure"
+            )
+        new_shape_id = new_ids[0]
+
+        target_slide.shapes._spTree.append(el)
+
+        new_shape = None
+        for sh in target_slide.shapes:
+            if sh.shape_id == new_shape_id:
+                new_shape = sh
+                break
+
+        # 위치/크기 적용 — x/y 지정 시 그 위치, 아니면 원본 실측 위치.
+        # (placeholder 였던 shape 는 xfrm 이 없을 수 있어 실측값으로 고정.)
+        if new_shape is not None:
+            left = (Emu(int(x_cm * _EMU_PER_CM)) if x_cm is not None
+                    else eff["left"])
+            top = (Emu(int(y_cm * _EMU_PER_CM)) if y_cm is not None
+                   else eff["top"])
+            try:
+                if left is not None:
+                    new_shape.left = left
+                if top is not None:
+                    new_shape.top = top
+                if getattr(new_shape, "width", None) is None \
+                        and eff["width"] is not None:
+                    new_shape.width = eff["width"]
+                if getattr(new_shape, "height", None) is None \
+                        and eff["height"] is not None:
+                    new_shape.height = eff["height"]
+            except (AttributeError, ValueError):
+                pass  # 위치 미지원 shape — 복사 자체는 유효
+
+        # 값 비우기 (서식/구조 유지) — 표 셀 run, 텍스트 run. 차트는 무의미.
+        cleared = False
+        if clear_values and new_shape is not None and kind in ("table", "text"):
+            a = f"{{{_A_NS}}}"
+            if kind == "table":
+                for tc in new_shape._element.iter(f"{a}tc"):
+                    self._blank_copied_pptx_tc(tc, a)
+            else:
+                for t_el in new_shape._element.iter(f"{a}t"):
+                    t_el.text = ""
+            cleared = True
+
+        # ---- 좌표 피드백 ----
+        result: dict[str, Any] = {
+            "source_slide_index": src_s_idx,
+            "target_slide_index": target_slide_index,
+            "shape_id": new_shape_id,
+            "kind": kind,
+            "values_cleared": cleared,
+        }
+        if kind == "table":
+            g = 0
+            new_tidx = None
+            total_tables = 0
+            for s_i, slide in enumerate(self._prs.slides, 1):
+                for sh in slide.shapes:
+                    if getattr(sh, "has_table", False):
+                        if s_i == target_slide_index \
+                                and sh.shape_id == new_shape_id:
+                            new_tidx = g
+                        g += 1
+            total_tables = g
+            previews = {
+                t.index: t.preview
+                for t in self.get_tables(preview_rows=10, max_cell_len=30)
+            }
+            result["table_index"] = new_tidx
+            if new_tidx is not None:
+                result["preview"] = previews.get(new_tidx)
+            if new_tidx is not None and new_tidx < total_tables - 1:
+                result["warning"] = (
+                    "새 표가 중간 순번에 추가되어 뒤쪽 표들의 전역 table_index "
+                    "가 변경되었습니다. 이 반환값의 table_index 를 사용하세요."
+                )
+        elif kind == "chart":
+            for c in self.get_charts(slide_index=target_slide_index):
+                if c.shape_id == new_shape_id:
+                    result["chart_type"] = c.chart_type
+                    break
+            result["hint"] = (
+                "복사본 수치 변경은 set_chart_data("
+                f"slide_index={target_slide_index}, shape_id={new_shape_id}) 로."
+            )
+        return result
 
     # ---- editing ----
     def render_template(self, context: dict[str, Any], *,

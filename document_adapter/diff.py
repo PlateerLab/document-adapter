@@ -76,12 +76,49 @@ def diff_documents(
                             pass
                     changes.append(entry)
 
-        return {
+        result: dict[str, Any] = {
             "changed": len(changes),
             "changes": changes,
             "tables_added": sorted(set(tb) - set(ta)),
             "tables_removed": sorted(set(ta) - set(tb)),
         }
+
+        # 차트 비교 (PPTX — 다른 포맷은 get_charts 가 빈 리스트라 no-op).
+        # 차트 없는 문서에서는 키 자체를 생략해 기존 반환 형태를 보존한다.
+        ca = {(c.slide_index, c.shape_id): c for c in a.get_charts()}
+        cb = {(c.slide_index, c.shape_id): c for c in b.get_charts()}
+        chart_changes: list[dict[str, Any]] = []
+        for key in sorted(set(ca) & set(cb)):
+            ch_a, ch_b = ca[key], cb[key]
+            cats = ch_b.categories if len(ch_b.categories) >= len(ch_a.categories) \
+                else ch_a.categories
+            for si in range(max(len(ch_a.series), len(ch_b.series))):
+                ser_a = ch_a.series[si] if si < len(ch_a.series) else None
+                ser_b = ch_b.series[si] if si < len(ch_b.series) else None
+                name = (ser_b or ser_a or {}).get("name", f"Series {si + 1}")
+                vals_a = ser_a["values"] if ser_a else []
+                vals_b = ser_b["values"] if ser_b else []
+                for ci in range(max(len(vals_a), len(vals_b))):
+                    x = vals_a[ci] if ci < len(vals_a) else None
+                    y = vals_b[ci] if ci < len(vals_b) else None
+                    if x == y:
+                        continue
+                    chart_changes.append({
+                        "slide_index": key[0],
+                        "shape_id": key[1],
+                        "series": name,
+                        "category": cats[ci] if ci < len(cats) else str(ci),
+                        "before": x,
+                        "after": y,
+                    })
+        charts_added = sorted(set(cb) - set(ca))
+        charts_removed = sorted(set(ca) - set(cb))
+        if chart_changes or charts_added or charts_removed:
+            result["chart_changes"] = chart_changes
+            result["charts_added"] = [list(k) for k in charts_added]
+            result["charts_removed"] = [list(k) for k in charts_removed]
+
+        return result
     finally:
         a.close()
         b.close()

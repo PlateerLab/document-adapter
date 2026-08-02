@@ -235,6 +235,250 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_charts",
+        "description": (
+            "**PPTX 전용**. 슬라이드의 차트 목록과 각 차트의 카테고리/시리즈 "
+            "수치를 반환한다. 차트는 inspect_document 의 tables 나 get_shapes "
+            "에 나타나지 않으므로, 차트 수치를 확인/편집하려면 반드시 이 도구로 "
+            "slide_index + shape_id 를 파악해야 한다. editable=false 인 차트는 "
+            "읽기 전용 (warning 필드에 이유 — scatter/bubble, 날짜축, 콤보 등)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slide_index": {
+                    "type": "integer",
+                    "description": "1-based. 생략 시 전체 슬라이드.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "set_chart_data",
+        "description": (
+            "**PPTX 전용**. 차트의 수치를 편집한다 (서식/색/축/범례는 유지). "
+            "get_charts 로 slide_index + shape_id 와 현재 데이터를 확인 후 호출. "
+            "\n"
+            "두 모드 중 하나만 사용: "
+            "(a) **일부 수치만 수정** → set_points=[{series:'매출', "
+            "category:'3분기', value:999}] — series/category 는 이름 또는 "
+            "0-based 인덱스. "
+            "(b) **전체 교체** (카테고리 추가/삭제, 시리즈 개수 변경 포함) → "
+            "categories + series=[{name, values}] (values 길이 == categories 수). "
+            "\n"
+            "title 만 단독 지정하면 차트 제목만 변경. "
+            "반환의 before/after 로 결과를 즉시 검증할 것."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slide_index": {"type": "integer", "description": "1-based"},
+                "shape_id": {"type": "integer"},
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "전체 교체 모드의 카테고리 (생략 시 기존 유지)",
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "values": {
+                                "type": "array",
+                                "items": {"type": ["number", "null"]},
+                            },
+                        },
+                        "required": ["values"],
+                    },
+                    "description": "전체 교체 모드의 시리즈 목록",
+                },
+                "set_points": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "series": {
+                                "type": ["string", "integer"],
+                                "description": "시리즈 이름 또는 0-based 인덱스",
+                            },
+                            "category": {
+                                "type": ["string", "integer"],
+                                "description": "카테고리 이름 또는 0-based 인덱스",
+                            },
+                            "value": {"type": ["number", "null"]},
+                        },
+                        "required": ["series", "category", "value"],
+                    },
+                    "description": "부분 수정 모드: 바꿀 지점 목록",
+                },
+                "title": {"type": "string", "description": "차트 제목 변경 (선택)"},
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+            },
+            "required": ["path", "slide_index", "shape_id"],
+        },
+    },
+    {
+        "name": "add_chart",
+        "description": (
+            "**PPTX 전용**. 슬라이드에 새 차트를 추가한다. "
+            "chart_type: column / column_stacked / bar / bar_stacked / line / "
+            "line_markers / pie / doughnut / area / area_stacked / radar. "
+            "위치·크기(cm) 생략 시 제목 아래 전폭에 결정적 배치. "
+            "반환된 shape_id 로 이후 set_chart_data 호출 가능. "
+            "시리즈 2개 이상이면 하단 범례 자동 표시."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "slide_index": {"type": "integer", "description": "1-based"},
+                "chart_type": {
+                    "type": "string",
+                    "enum": [
+                        "column", "column_stacked", "bar", "bar_stacked",
+                        "line", "line_markers", "pie", "doughnut",
+                        "area", "area_stacked", "radar",
+                    ],
+                },
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "values": {
+                                "type": "array",
+                                "items": {"type": ["number", "null"]},
+                            },
+                        },
+                        "required": ["values"],
+                    },
+                },
+                "title": {"type": "string"},
+                "x_cm": {"type": "number"},
+                "y_cm": {"type": "number"},
+                "width_cm": {"type": "number"},
+                "height_cm": {"type": "number"},
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+            },
+            "required": ["path", "slide_index", "chart_type",
+                         "categories", "series"],
+        },
+    },
+    {
+        "name": "get_slides",
+        "description": (
+            "**PPTX 전용**. 슬라이드(페이지) 목록과 각 페이지의 구성 요약"
+            "(레이아웃 이름/제목/표·차트·텍스트 개수/텍스트 미리보기)을 반환. "
+            "페이지 추가가 필요할 때 duplicate_slide 로 복제할 '양식 페이지' 를 "
+            "고르는 용도. 상세 내용은 get_tables(location='slide N') / "
+            "get_shapes(slide_index) / get_charts(slide_index) 로 확인."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "duplicate_slide",
+        "description": (
+            "**PPTX 전용**. 기존 슬라이드를 복제해 새 페이지로 삽입한다 — "
+            "서식/표/차트/이미지가 유지되고, 차트 데이터는 독립 복제되어 "
+            "복제본 편집이 원본에 영향을 주지 않는다. at(1-based) 생략 시 맨 뒤. "
+            "반환의 tables/charts/text_shapes 좌표로 곧장 set_cell / "
+            "set_shape_text / set_chart_data 를 호출해 내용을 채울 것. "
+            "tables[].preview 에 각 행의 라벨이 보이므로, 값을 넣을 (row, col) 은 "
+            "**preview 의 라벨을 확인해** 결정할 것 (행 위치 추측 금지 — 예: "
+            "preview[2][0]=='담당자' 면 담당자 값은 row=2, col=1). "
+            "**주의**: 중간 위치(at)에 삽입하면 뒤쪽 표들의 table_index 가 "
+            "밀리므로, 이전 inspect 결과 대신 반환된 좌표를 사용해야 한다. "
+            "노트 슬라이드는 복제되지 않음."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "source_slide_index": {
+                    "type": "integer",
+                    "description": "복제할 슬라이드 (1-based)",
+                },
+                "at": {
+                    "type": "integer",
+                    "description": "삽입 위치 (1-based). 생략 시 맨 뒤.",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+            },
+            "required": ["path", "source_slide_index"],
+        },
+    },
+    {
+        "name": "copy_shape",
+        "description": (
+            "**PPTX 전용**. 특정 표/차트/텍스트박스 **하나만** 다른 슬라이드로 "
+            "복사한다 (서식·스타일 유지, 같은 파일 내). 슬라이드 전체 복제는 "
+            "duplicate_slide, shape 하나만 재활용할 땐 이 도구. "
+            "원본 지정: 표는 table_index (슬라이드 자동 판별), 차트/텍스트박스는 "
+            "source_slide_index+shape_id (get_charts/get_shapes 로 확인). "
+            "clear_values=true 면 복사본의 표 셀/텍스트 값을 비운다 (서식 유지 — "
+            "'양식만 베끼기'). 차트는 데이터 유지 복사 + 독립 복제이므로 수치는 "
+            "복사 후 set_chart_data 로 변경. x_cm/y_cm 생략 시 원본과 같은 위치. "
+            "반환의 shape_id / table_index+preview 좌표로 곧장 후속 편집."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "target_slide_index": {
+                    "type": "integer",
+                    "description": "복사해 넣을 슬라이드 (1-based)",
+                },
+                "table_index": {
+                    "type": "integer",
+                    "description": "표 복사 시: 전역 flat table index",
+                },
+                "source_slide_index": {
+                    "type": "integer",
+                    "description": "shape_id 지정 시 필수 (1-based)",
+                },
+                "shape_id": {
+                    "type": "integer",
+                    "description": "차트/텍스트박스 복사 시: shape id",
+                },
+                "x_cm": {"type": "number"},
+                "y_cm": {"type": "number"},
+                "clear_values": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true 면 표 셀/텍스트 값 비움 (서식 유지)",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "생략 시 원본 덮어쓰기",
+                },
+            },
+            "required": ["path", "target_slide_index"],
+        },
+    },
+    {
         "name": "diff_documents",
         "description": (
             "두 문서(예: 원본 vs 편집본)를 셀 단위로 비교해 **무엇이 어디서 어떻게 "
@@ -563,6 +807,35 @@ def inspect_document(path: str, min_rows: int = 1, min_cols: int = 1) -> dict[st
                 result["shape_summary"] = summary
             except NotImplementedError:
                 pass  # DOCX / HWPX 는 shape 개념 약함 — skip
+
+            # 차트 요약: 차트는 tables/shapes 어디에도 안 나타나므로, 존재를
+            # 알리고 전용 도구(get_charts/set_chart_data)로 유도한다.
+            # (수치는 넣지 않음 — 토큰 절약, 상세는 get_charts.)
+            try:
+                charts = doc.get_charts()
+                if charts:
+                    result["chart_summary"] = {
+                        "chart_count": len(charts),
+                        "charts": [
+                            {
+                                "slide_index": c.slide_index,
+                                "shape_id": c.shape_id,
+                                "chart_type": c.chart_type,
+                                "title": c.title,
+                                "series_names": [s["name"] for s in c.series],
+                                "editable": c.editable,
+                            }
+                            for c in charts
+                        ],
+                        "hint": (
+                            "차트 수치는 표(tables)에 나타나지 않습니다. 차트 "
+                            "수치 편집은 set_cell 이 아니라 get_charts 로 "
+                            "데이터를 확인한 뒤 set_chart_data 를 사용하세요."
+                        ),
+                    }
+                result["slide_count"] = len(doc.get_slides())
+            except Exception:  # noqa: BLE001 — 요약 실패가 inspect 를 막으면 안 됨
+                pass
         result["tables"] = [t.to_dict() for t in filtered]
 
         # 중복 라벨 힌트: 여러 곳에 같은 라벨이 있으면 fill_form 에서 ambiguous
@@ -731,6 +1004,129 @@ def set_shape_text(path: str, slide_index: int, shape_id: int, text: str,
         "previous_text": old,
         "new_text": text,
     }
+
+
+def get_charts(path: str, slide_index: int | None = None) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        charts = doc.get_charts(slide_index=slide_index)
+    finally:
+        doc.close()
+    return {
+        "format": doc.format,
+        "source": str(path),
+        "chart_count": len(charts),
+        "charts": [c.to_dict() for c in charts],
+    }
+
+
+def set_chart_data(path: str, slide_index: int, shape_id: int,
+                   categories: list[str] | None = None,
+                   series: list[dict[str, Any]] | None = None,
+                   set_points: list[dict[str, Any]] | None = None,
+                   title: str | None = None,
+                   output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.set_chart_data(
+            slide_index, shape_id,
+            categories=categories, series=series,
+            set_points=set_points, title=title,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
+def add_chart(path: str, slide_index: int, chart_type: str,
+              categories: list[str], series: list[dict[str, Any]],
+              title: str | None = None,
+              x_cm: float | None = None, y_cm: float | None = None,
+              width_cm: float | None = None, height_cm: float | None = None,
+              output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.add_chart(
+            slide_index, chart_type,
+            categories=categories, series=series, title=title,
+            x_cm=x_cm, y_cm=y_cm, width_cm=width_cm, height_cm=height_cm,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
+def get_slides(path: str) -> dict[str, Any]:
+    doc = load(path)
+    try:
+        slides = doc.get_slides()
+    finally:
+        doc.close()
+    return {
+        "format": doc.format,
+        "source": str(path),
+        "slide_count": len(slides),
+        "slides": [s.to_dict() for s in slides],
+    }
+
+
+def duplicate_slide(path: str, source_slide_index: int,
+                    at: int | None = None,
+                    output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.duplicate_slide(source_slide_index, at=at)
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
+
+
+def copy_shape(path: str, target_slide_index: int,
+               source_slide_index: int | None = None,
+               shape_id: int | None = None,
+               table_index: int | None = None,
+               x_cm: float | None = None, y_cm: float | None = None,
+               clear_values: bool = False,
+               output_path: str | None = None) -> dict[str, Any]:
+    target = Path(output_path) if output_path else Path(path)
+    if output_path and Path(path) != target:
+        shutil.copy2(path, target)
+
+    doc = load(target)
+    try:
+        result = doc.copy_shape(
+            target_slide_index,
+            source_slide_index=source_slide_index,
+            shape_id=shape_id, table_index=table_index,
+            x_cm=x_cm, y_cm=y_cm, clear_values=clear_values,
+        )
+        doc.save()
+    finally:
+        doc.close()
+
+    result["output_path"] = str(target)
+    return result
 
 
 def get_text_map(path: str, max_para_len: int = 80,
@@ -905,6 +1301,12 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "fill_form": fill_form,
     "get_shapes": get_shapes,
     "set_shape_text": set_shape_text,
+    "get_charts": get_charts,
+    "set_chart_data": set_chart_data,
+    "add_chart": add_chart,
+    "get_slides": get_slides,
+    "duplicate_slide": duplicate_slide,
+    "copy_shape": copy_shape,
     "get_text_map": get_text_map,
     "find_text": find_text,
     "replace_text": replace_text,

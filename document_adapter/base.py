@@ -287,6 +287,68 @@ class ShapeInfo:
 
 
 @dataclass
+class ChartInfo:
+    """PPTX 차트 메타 + 데이터. get_shapes 와 같은 (slide_index, shape_id) 좌표계.
+
+    ``editable`` 이 False 면 set_chart_data 로 편집할 수 없는 구조
+    (scatter/bubble, 다중 레벨 카테고리, 날짜 축, 콤보 차트 등) — 이유는
+    ``warning`` 에 담긴다. 읽기(수치 확인)는 가능한 범위에서 제공.
+    """
+    slide_index: int                  # 1-based
+    shape_id: int
+    name: str                         # shape 이름 (예: "Chart 3")
+    chart_type: str                   # XL_CHART_TYPE 이름 (예: "COLUMN_CLUSTERED")
+    title: str | None
+    categories: list[str]
+    series: list[dict[str, Any]]      # [{"name": "매출", "values": [120.0, None, ...]}]
+    editable: bool = True
+    warning: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "slide_index": self.slide_index,
+            "shape_id": self.shape_id,
+            "name": self.name,
+            "chart_type": self.chart_type,
+            "categories": self.categories,
+            "series": self.series,
+            "editable": self.editable,
+        }
+        if self.title:
+            d["title"] = self.title
+        if self.warning:
+            d["warning"] = self.warning
+        return d
+
+
+@dataclass
+class SlideInfo:
+    """슬라이드 1장의 개요 — LLM 이 '어떤 양식 페이지를 복제/편집할지' 고르는 눈."""
+    slide_index: int                  # 1-based
+    layout_name: str
+    title: str | None
+    shape_count: int
+    table_count: int
+    chart_count: int
+    text_shape_count: int
+    texts_preview: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "slide_index": self.slide_index,
+            "layout_name": self.layout_name,
+            "title": self.title,
+            "shape_count": self.shape_count,
+            "table_count": self.table_count,
+            "chart_count": self.chart_count,
+            "text_shape_count": self.text_shape_count,
+        }
+        if self.texts_preview:
+            d["texts_preview"] = self.texts_preview
+        return d
+
+
+@dataclass
 class CellContent:
     """단일 셀의 전체 내용 + 병합/중첩 메타 + 크기 힌트.
 
@@ -646,6 +708,129 @@ class DocumentAdapter(ABC):
         """
         raise NotImplementedForFormat(
             f"{self.format} does not support shape-level text editing"
+        )
+
+    # ---- charts (v0.17+, PPTX 전용) ----
+
+    def get_charts(self, slide_index: int | None = None) -> list[ChartInfo]:
+        """차트 목록 (카테고리/시리즈 수치 포함). PPTX 외 포맷은 빈 리스트.
+
+        차트는 get_tables/get_shapes 어디에도 나타나지 않으므로, 차트 수치를
+        다루려면 반드시 이 메서드로 (slide_index, shape_id) 를 파악해야 한다.
+        """
+        return []
+
+    def set_chart_data(
+        self,
+        slide_index: int,
+        shape_id: int,
+        *,
+        categories: list[str] | None = None,
+        series: list[dict[str, Any]] | None = None,
+        set_points: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """차트 데이터 편집. 두 모드 중 하나 (동시 지정 불가):
+
+        - 전체 교체: ``categories``(생략 시 기존 유지) + ``series``
+          (``[{"name", "values"}]``, values 길이 == 카테고리 수).
+        - 부분 패치: ``set_points`` (``[{"series", "category", "value"}]`` —
+          series/category 는 이름 또는 0-based 인덱스).
+
+        ``title`` 만 단독 지정도 허용 (제목만 변경). 서식(색/축/범례)은 유지.
+        반환: {before, after} 스냅샷 포함 dict.
+        PPTX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support chart editing"
+        )
+
+    def add_chart(
+        self,
+        slide_index: int,
+        chart_type: str,
+        *,
+        categories: list[str],
+        series: list[dict[str, Any]],
+        title: str | None = None,
+        x_cm: float | None = None,
+        y_cm: float | None = None,
+        width_cm: float | None = None,
+        height_cm: float | None = None,
+    ) -> dict[str, Any]:
+        """슬라이드에 새 차트 추가. 위치/크기(cm) 생략 시 결정적 기본 배치.
+
+        chart_type: column/column_stacked/bar/bar_stacked/line/line_markers/
+        pie/doughnut/area/area_stacked/radar.
+        반환 dict 의 shape_id 로 이후 set_chart_data 호출 가능.
+        PPTX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support chart creation"
+        )
+
+    # ---- slides (v0.17+, PPTX 전용) ----
+
+    def get_slides(self) -> list[SlideInfo]:
+        """슬라이드(페이지) 개요 목록. PPTX 외 포맷은 빈 리스트.
+
+        페이지 추가가 필요할 때 duplicate_slide 로 복제할 '양식 페이지' 를
+        고르는 용도 — 각 항목에 레이아웃/제목/표·차트·텍스트 개수 요약.
+        """
+        return []
+
+    def duplicate_slide(
+        self,
+        source_slide_index: int,
+        at: int | None = None,
+    ) -> dict[str, Any]:
+        """기존 슬라이드를 복제해 새 페이지로 삽입 (서식/표/차트/이미지 유지).
+
+        차트가 있으면 chart part + 내장 워크북을 독립 복제해 원본과 데이터가
+        분리된다. ``at``(1-based) 생략 시 맨 뒤. 노트 슬라이드는 복제하지 않음.
+
+        반환: 새 슬라이드의 좌표 피드백 — {new_slide_index, tables(재계산된
+        전역 table_index + 행 라벨이 보이는 preview), charts(shape_id),
+        text_shapes(shape_id)}. 중간 삽입 시 뒤쪽 표들의 table_index 가
+        밀리므로 반환 좌표를 사용할 것. 복제본을 채울 때는 preview 의 행
+        라벨을 보고 (row, col) 을 결정한다 — 추측 금지.
+        PPTX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support slide duplication"
+        )
+
+    def copy_shape(
+        self,
+        target_slide_index: int,
+        *,
+        source_slide_index: int | None = None,
+        shape_id: int | None = None,
+        table_index: int | None = None,
+        x_cm: float | None = None,
+        y_cm: float | None = None,
+        clear_values: bool = False,
+    ) -> dict[str, Any]:
+        """특정 표/차트/텍스트박스 shape 하나를 다른 슬라이드로 복사 (서식 유지).
+
+        원본 지정은 둘 중 하나 (동시 지정 불가):
+          - ``table_index``: 표를 전역 flat index 로 지정 (슬라이드 자동 판별)
+          - ``source_slide_index`` + ``shape_id``: 차트/텍스트박스 등 shape 지정
+
+        ``clear_values=True`` 면 복사본의 표 셀/텍스트 run 값을 비운다 (서식·구조
+        유지 — "양식만 베끼기"). 차트는 데이터를 유지한 채 복사되므로 (빈 차트는
+        의미가 없음) 수치 변경은 복사 후 set_chart_data 로 한다. 차트 part 와
+        내장 워크북은 독립 복제되어 복사본 편집이 원본에 영향을 주지 않는다.
+
+        ``x_cm``/``y_cm`` 생략 시 원본과 같은 위치에 배치. placeholder 를 복사하면
+        위치/크기를 실측값으로 고정한 일반 shape 가 된다 (placeholder 충돌 방지).
+
+        반환: {target_slide_index, shape_id(새 id), kind, table_index+preview(표),
+        ...} — 반환 좌표로 곧장 set_cell/set_shape_text/set_chart_data 호출.
+        PPTX 만 지원 — 그 외 포맷은 NotImplementedForFormat.
+        """
+        raise NotImplementedForFormat(
+            f"{self.format} does not support shape copying"
         )
 
     # ---- paragraph text ops (v0.13+, DOCX/HWPX) ----
