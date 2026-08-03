@@ -88,6 +88,12 @@ exclude = ["tests*", "examples*"]
 target-version = "py310"
 line-length = 100
 
+[tool.ruff.lint]
+# 룰셋을 명시해 린터 판올림에 검사 기준이 흔들리지 않게 한다.
+# (미지정 시 ruff 기본값을 따르는데, 0.16 에서 기본 룰셋이 확대되며 CI 가 깨졌다)
+# 확장은 의도적으로: 룰을 추가할 때 기존 위반을 함께 정리한다.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
