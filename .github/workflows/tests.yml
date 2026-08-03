@@ -3,8 +3,8 @@ name: tests
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
+  # v* 태그는 release.yml이 처리한다 (테스트 → 빌드 → PyPI 배포)
 
 jobs:
   lint:
