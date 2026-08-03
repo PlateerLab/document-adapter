@@ -389,6 +389,25 @@ examples/
 └── claude_api_example.py    # Claude API Tool Use 에이전트 루프
 ```
 
+## 릴리스 (PyPI 배포)
+
+리포에 write 권한이 있으면 **누구나** 배포할 수 있다. PyPI 토큰은 필요 없다 —
+`.github/workflows/release.yml` 이 GitHub Actions의 Trusted Publishing(OIDC)으로 업로드한다.
+
+```bash
+# 1. pyproject.toml 의 version 상향 → CHANGELOG.md 갱신 → main 에 머지
+# 2. 태그를 밀면 끝
+git tag v0.19.0
+git push origin v0.19.0
+```
+
+태그 push → 테스트 → 빌드 → PyPI 업로드 → GitHub Release 생성까지 자동 진행된다.
+
+- 태그와 `pyproject.toml` 의 버전이 다르면 첫 단계에서 실패한다 (오배포 방지).
+- 배포 단계는 GitHub Environment `pypi` 를 거친다. 승인자가 지정돼 있으면 승인 후 업로드된다.
+- 진행 상황: [Actions 탭](https://github.com/PlateerLab/document-adapter/actions) 의 `release` 워크플로우.
+- 이미 PyPI에 있는 버전은 건너뛴다 (`skip-existing`). 재배포하려면 버전을 올려야 한다.
+
 ## 라이선스
 
 **Apache License 2.0** — [`LICENSE`](LICENSE) / [`NOTICE`](NOTICE) 참조.
