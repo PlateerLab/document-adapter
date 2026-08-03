@@ -7,6 +7,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-08-03
+
+### Fixed
+- **`mcp` 의존성에 `<2` 상한 추가.** mcp 2.x 는 `Server.list_tools` /
+  `call_tool` 데코레이터와 `Tool(inputSchema=)` 를 제거해서, 상한 없는
+  `mcp>=1.0` 으로 새로 설치하면 `document_adapter.mcp_server` 가 import
+  단계에서 `AttributeError` 로 죽었다 (`document-adapter-mcp` 서버 기동 불가).
+  파이썬 API 는 영향 없음. mcp 2.x 대응 전까지 핀 유지.
+
+### Changed
+- **릴리스 자동화** — `v*` 태그 push 로 테스트 → 빌드 → PyPI 배포 →
+  GitHub Release 까지 수행하는 `release.yml` 추가. 인증은 PyPI Trusted
+  Publishing(OIDC) 이라 저장된 API 토큰이 필요 없고, 리포 write 권한이 있는
+  팀원 누구나 릴리스할 수 있다. 절차는 README 의 "릴리스" 절 참조.
+- `[tool.ruff.lint] select` 명시 — 룰셋이 미지정이라 ruff 판올림(0.16)에
+  검사 기준이 바뀌며 CI 가 깨지던 문제 차단.
+
 ## [0.18.0] — 2026-07-30
 
 **PPTX shape 단위 복사** — 슬라이드 전체(duplicate_slide)가 아니라 특정
