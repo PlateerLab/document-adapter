@@ -7,6 +7,67 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-11
+
+**.xlsx 완성 — 차트 · 보고서 시트 · 편집** — 표만 그리던 .xlsx 계층을
+"생성 + 편집" 양쪽으로 채웠다. `create_document` 한 번으로
+`1번=데이터 / 2번=차트 / 3번=보고서` 워크북이 나오고, 그 파일을 다시 열어
+행·열·시트를 조작할 수 있다.
+
+### Added — 생성 (sheet spec 확장)
+- **`sheets[].charts`** — 셀 범위를 참조하는 **살아있는 엑셀 차트**.
+  이미지가 아니라 `Reference` 기반이라 원본 데이터가 바뀌면 차트도 갱신된다.
+  - `source_sheet` 로 **다른 시트의 범위** 참조 (인덱스 또는 시트명, 생략 시 자기 시트).
+  - 12종: `column · column_stacked · bar · bar_stacked · line · line_markers ·
+    pie · doughnut · area · area_stacked · radar · scatter`
+    (이름을 pptx `add_chart` 와 통일해 포맷 간 혼동 제거).
+  - `title` / `anchor` / `width_cm` / `height_cm` / `x_axis_title` /
+    `y_axis_title` / `titles_from_data`.
+  - **2-pass 렌더** — 시트를 모두 만든 뒤 차트를 붙여 뒤에 정의된 시트도 참조 가능.
+- **`sheets[].markdown`** — markdown 서브셋을 셀 + 서식으로 렌더하는 보고서 시트.
+  기존 `markdown_parser` 블록 IR 재사용.
+  - 헤딩(1~3단) · 문단(자동 줄바꿈 + 행높이 추정) · 불릿/번호 · 인용 ·
+    수평선 · 코드펜스 · 파이프 표.
+  - **인라인 `**굵게**` / `*기울임*` / `` `코드` `` 를 `CellRichText` 로 run 단위 보존.**
+  - 눈금선 숨김 + 본문 열 폭 자동.
+- **`sheets[].freeze`** — 틀고정 명시 지정 (표 기본 `"A2"`, 차트/보고서는 없음).
+- 한 시트는 `headers`+`rows` / `charts` / `markdown` 중 최소 하나만 있으면 된다.
+
+### Added — 편집
+- **`insert_row` / `insert_column` (XLSX)** — 종전 `NotImplementedForFormat`
+  이던 경로 구현. 인접 행/열의 서식을 상속한다.
+- **`delete_row` / `delete_column`** — 삭제된 값 목록을 반환해 오삭제를 즉시 확인.
+- **시트 관리** — `add_sheet` / `rename_sheet` / `delete_sheet`.
+  시트명 31자 절단 · `[]:*?/\` 금지 · 중복 금지, 마지막 시트 삭제 거부.
+- **`set_sheet_markdown` / `get_sheet_markdown`** — 서술형 보고서 시트를
+  **시트 단위로 통째 재작성**한다. 보고서 시트는 헤딩·문단이 A열, 불릿이 B열인
+  비균질 레이아웃이라 셀 좌표 편집이 위험했다(빈 A열에 써서 옆 불릿과 겹치는
+  사고가 실제 발생). 생성 계층과 **같은 렌더러**를 써서 서식이 항상 일관된다.
+- **`has_formulas(table_index)`** — 삽입/삭제 후 참조 보정 경고 판단용.
+
+### Fixed
+- **`XlsxAdapter._open()` 이 인라인 서식을 유실**하던 문제 — `load_workbook()`
+  기본값은 rich text 를 평문으로 평탄화한다. 보고서 시트를 편집 도구로 한 번만
+  건드려도 굵게/기울임이 사라졌다. `rich_text=True` 로 수정.
+- `.xlsm` / `.xltm` 을 열 때 `keep_vba=True` 로 매크로 보존.
+- **openpyxl 이 자동 처리하지 않는 항목을 어댑터가 보정** (3.1.5 실측:
+  insert/delete 는 셀 값만 옮긴다).
+  - 병합 범위 — 삽입/삭제 지점 기준 이동, 삭제되는 단일 행/열 병합은 함께 제거.
+  - 행 높이 · 열 너비 — 함께 이동.
+  - 삽입된 행/열의 서식 — 인접 행/열에서 복사(비어 있던 문제).
+- 삽입/삭제 경계를 **병합이 가로지르면 `NotImplementedForFormat` 으로 거절** —
+  조용히 표를 깨뜨리지 않는다 (docx 어댑터와 동일 방침).
+
+### Known limitations
+- **수식 상대참조**와 **차트 series 참조 범위**는 행/열 이동을 따라가지 않는다
+  (openpyxl 이 재작성하지 않음). `has_formulas` 로 감지해 호출 레이어가 경고한다.
+
+### Notes
+- **차트/이미지 보존**: openpyxl 3.1.5 기준 `load → edit → save` 왕복에서
+  차트 XML·데이터 참조·이미지가 모두 보존됨을 회귀 테스트로 고정
+  (`test_charts_survive_edit_roundtrip`). 업그레이드로 퇴행하면 테스트가 잡는다.
+- 기존 sheet spec 은 **완전 하위 호환** — 표만 있는 스펙의 렌더 결과는 동일하다.
+
 ## [0.18.1] — 2026-08-03
 
 ### Fixed

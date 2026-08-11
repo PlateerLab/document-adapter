@@ -681,6 +681,78 @@ class DocumentAdapter(ABC):
             f"insert_column is not supported for format '{self.format}'"
         )
 
+    # ---- 행/열 삭제 (v0.19+, XLSX 전용) ----
+    def delete_row(self, table_index: int, at_row: int) -> list[str]:
+        """행을 삭제하고 삭제된 행의 값을 반환한다.
+
+        삭제 지점을 세로 병합이 가로지르면 ``NotImplementedForFormat``.
+        해당 행만으로 이뤄진 병합은 함께 사라진다.
+
+        Args:
+            table_index: 대상 표 flat index (XLSX 는 시트 인덱스).
+            at_row: 0-based 삭제 위치.
+
+        Returns:
+            삭제된 행의 셀 값 목록 (되돌리기용 스냅샷).
+        """
+        raise NotImplementedForFormat(
+            f"delete_row is not supported for format '{self.format}'"
+        )
+
+    def delete_column(self, table_index: int, at_col: int) -> list[str]:
+        """열을 삭제하고 삭제된 열의 값을 반환한다.
+
+        삭제 지점을 가로 병합이 가로지르면 ``NotImplementedForFormat``.
+        """
+        raise NotImplementedForFormat(
+            f"delete_column is not supported for format '{self.format}'"
+        )
+
+    # ---- 시트 관리 (v0.19+, XLSX 전용) ----
+    def add_sheet(self, name: str, at_index: int | None = None) -> int:
+        """새 시트를 만들고 그 table_index(0-based)를 반환한다.
+
+        Args:
+            name: 시트 이름 (31자 절단, ``[]:*?/\\`` 금지, 중복 불가).
+            at_index: 0-based 삽입 위치. None 이면 맨 뒤.
+        """
+        raise NotImplementedForFormat(
+            f"add_sheet is not supported for format '{self.format}'"
+        )
+
+    def rename_sheet(self, table_index: int, new_name: str) -> str:
+        """시트 이름을 바꾸고 이전 이름을 반환한다."""
+        raise NotImplementedForFormat(
+            f"rename_sheet is not supported for format '{self.format}'"
+        )
+
+    def delete_sheet(self, table_index: int) -> str:
+        """시트를 삭제하고 삭제된 시트명을 반환한다. 마지막 1개는 거절."""
+        raise NotImplementedForFormat(
+            f"delete_sheet is not supported for format '{self.format}'"
+        )
+
+    def has_formulas(self, table_index: int) -> bool:
+        """대상 표/시트에 수식이 있는지 (삽입·삭제 후 참조 보정 경고 판단용)."""
+        return False
+
+    # ---- markdown 시트 (v0.19+, XLSX 전용) ----
+    def set_sheet_markdown(self, table_index: int, markdown: str) -> int:
+        """시트를 비우고 markdown 을 다시 렌더한다 (서술형 보고서 시트용).
+
+        헤딩/문단/불릿이 서로 다른 열에 놓이는 비균질 레이아웃이라 셀 좌표
+        편집이 위험하다 — 시트 단위 재작성으로 좌표 추측을 없앤다.
+        """
+        raise NotImplementedForFormat(
+            f"set_sheet_markdown is not supported for format '{self.format}'"
+        )
+
+    def get_sheet_markdown(self, table_index: int) -> str:
+        """시트를 markdown 으로 되돌린다 (근사 복원)."""
+        raise NotImplementedForFormat(
+            f"get_sheet_markdown is not supported for format '{self.format}'"
+        )
+
     # ---- shape text (v0.8+, PPTX 전용) ----
     def get_shapes(
         self,

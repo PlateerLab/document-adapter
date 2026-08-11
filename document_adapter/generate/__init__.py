@@ -7,6 +7,12 @@
     create_document("공문.hwpx", markdown="# 제목\\n본문...")
     create_document("매출.xlsx", sheets=[{"name": "...", "headers": [...], "rows": [...]}])
 
+.xlsx sheet spec 은 시트당 세 가지 역할을 조합할 수 있다 (v0.17+):
+    {"name": "데이터",   "headers": [...], "rows": [...]}      # 표
+    {"name": "차트",     "charts": [{...}]}                     # 다른 시트 참조 차트
+    {"name": "보고서",   "markdown": "# 제목\\n본문"}            # markdown → 셀+서식
+자세한 스키마는 ``xlsx_writer`` 모듈 docstring 참조.
+
 설계 원칙:
 - LLM 산출물은 markdown / sheet spec(dict) 뿐 — XML 을 직접 쓰는 경로 없음.
 - 렌더러가 곧 검증기: 잘못된 산출물은 이중어 ValueError. 재시도는 호출
