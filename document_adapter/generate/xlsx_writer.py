@@ -175,7 +175,7 @@ def _set_row_height(ws, row: int, text: str, avail_width: int) -> None:
 
 def _render_markdown_sheet(ws, md: str) -> int:
     """markdown → 셀 + 서식. 마지막으로 사용한 행 번호를 반환한다."""
-    blocks = parse_markdown(md or "")
+    blocks: list[Block] = parse_markdown(md or "")
 
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = _REPORT_GUTTER_WIDTH
