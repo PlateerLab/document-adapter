@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
 from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from .base import (
     CellContent,
@@ -105,6 +108,34 @@ def _maybe_number(s: str) -> int | float | None:
         return int(f) if "." not in plain else f
     except ValueError:
         return None
+
+
+def _to_argb(color: Any) -> str:
+    """'#RRGGBB' / 'RRGGBB' / 'AARRGGBB' → openpyxl ARGB 8자리 hex.
+
+    색 이름 하드코딩 목록을 두지 않는다 — 호출자(에이전트)가 hex 로 넘긴다.
+    이렇게 하면 9색 같은 고정 목록에 갇히지 않고 1,600만 색을 그대로 쓴다.
+    """
+    s = str(color).strip().lstrip("#").upper()
+    if len(s) == 6:
+        s = "FF" + s
+    if len(s) != 8 or any(ch not in "0123456789ABCDEF" for ch in s):
+        raise ValueError(
+            f"color must be hex like '#FFFF00' (or 'theme:N'): got {color!r}")
+    return s
+
+
+def _color_obj(color: Any) -> Color:
+    """색 지정을 openpyxl Color 로 변환한다. 엑셀의 실제 색 자산을 그대로 쓴다:
+      - hex('#FFFF00' / 'FFFF00' / 'AARRGGBB')  → 임의 RGB 색
+      - 'theme:N' 또는 'theme:N:tint'           → 통합문서 테마 팔레트 N번(0..9)
+        색(dk1/lt1/dk2/lt2/accent1..6/hlink 등). tint 로 명암 조절(-1..1).
+    테마색을 쓰면 그 파일의 디자인 팔레트와 자동으로 어울린다."""
+    s = str(color).strip()
+    if s.lower().startswith("theme:"):
+        p = s.split(":")
+        return Color(theme=int(p[1]), tint=float(p[2]) if len(p) > 2 else 0.0)
+    return Color(rgb=_to_argb(s))
 
 
 class XlsxAdapter(DocumentAdapter):
@@ -555,6 +586,213 @@ class XlsxAdapter(DocumentAdapter):
     def has_formulas(self, table_index: int) -> bool:
         """해당 시트에 수식이 있는지 — 삽입/삭제 후 참조 보정 경고 판단용."""
         return self._has_formula(self._ws(table_index))
+
+    # ---- 서식 · 조건부 강조 · 레이아웃 ------------------------------------
+    #
+    # openpyxl 로 닫힌 파일에 직접 서식을 입힌다. 좌표는 다른 메서드와 동일한
+    # 0-based 논리 좌표. 병합 non-anchor 셀(openpyxl MergedCell)은 서식 지정이
+    # 불가하므로 건너뛰고 anchor 에만 적용한다.
+
+    _BORDER_WHICH = {
+        "all": ("top", "bottom", "left", "right"),
+        "outline": ("top", "bottom", "left", "right"),
+        "top": ("top",), "bottom": ("bottom",),
+        "left": ("left",), "right": ("right",),
+    }
+
+    def _iter_range(self, ws, row0: int, col0: int, row1: int, col1: int):
+        """범위 셀을 순회하되 병합 non-anchor(MergedCell, 서식 지정 불가)는 건너뛴다."""
+        for r in range(row0, row1 + 1):
+            for c in range(col0, col1 + 1):
+                cell = ws.cell(row=r + 1, column=c + 1)
+                if isinstance(cell, MergedCell):
+                    continue
+                yield cell
+
+    def set_fill_color(self, table_index: int, row0: int, col0: int,
+                       row1: int, col1: int, color: str | None) -> None:
+        """범위 셀의 배경(채우기) 색을 칠한다. color 는 '#FFFF00'/'yellow'/'노란색'
+        등. color 가 None 또는 'none' 이면 채우기를 제거한다."""
+        ws = self._ws(table_index)
+        clear = color is None or str(color).strip().lower() in ("none", "")
+        fill = PatternFill(fill_type=None) if clear else PatternFill(
+            patternType="solid", fgColor=_color_obj(color))
+        for cell in self._iter_range(ws, row0, col0, row1, col1):
+            cell.fill = fill
+
+    def set_font(self, table_index: int, row0: int, col0: int, row1: int, col1: int,
+                 *, bold: bool | None = None, italic: bool | None = None,
+                 color: str | None = None, size: float | None = None) -> None:
+        """범위 글꼴을 바꾼다(지정한 속성만). 기존 글꼴은 보존한다."""
+        ws = self._ws(table_index)
+        for cell in self._iter_range(ws, row0, col0, row1, col1):
+            f = cell.font
+            cell.font = Font(
+                name=f.name, size=size if size is not None else f.size,
+                bold=bold if bold is not None else f.bold,
+                italic=italic if italic is not None else f.italic,
+                color=_color_obj(color) if color is not None else f.color,
+            )
+
+    def set_number_format(self, table_index: int, row0: int, col0: int,
+                          row1: int, col1: int, format_code: str) -> None:
+        """범위의 표시 형식만 바꾼다(값은 그대로). 예: '#,##0', '0.00%',
+        'yyyy-mm-dd', '₩#,##0', '@'(텍스트)."""
+        ws = self._ws(table_index)
+        for cell in self._iter_range(ws, row0, col0, row1, col1):
+            cell.number_format = format_code
+
+    def set_borders(self, table_index: int, row0: int, col0: int, row1: int, col1: int,
+                    which: str = "all", style: str = "thin",
+                    color: str | None = None) -> None:
+        """범위에 테두리를 긋는다. which='all'(격자)/'outline'(바깥만)/'top'/'bottom'/
+        'left'/'right'. style 은 openpyxl 라인 스타일 전체를 그대로 받는다:
+        thin/medium/thick/dashed/dotted/double/hair/mediumDashed/dashDot/... .
+        color 는 선 색 hex(생략 시 자동/검정)."""
+        ws = self._ws(table_index)
+        side = Side(style=style, color=_to_argb(color) if color else None)
+        edges = self._BORDER_WHICH.get(which, self._BORDER_WHICH["all"])
+        outline = which == "outline"
+        for r in range(row0, row1 + 1):
+            for c in range(col0, col1 + 1):
+                cell = ws.cell(row=r + 1, column=c + 1)
+                if isinstance(cell, MergedCell):
+                    continue
+                b = cell.border
+                kw = dict(left=b.left, right=b.right, top=b.top, bottom=b.bottom)
+                if outline:
+                    if r == row0 and "top" in edges:
+                        kw["top"] = side
+                    if r == row1 and "bottom" in edges:
+                        kw["bottom"] = side
+                    if c == col0 and "left" in edges:
+                        kw["left"] = side
+                    if c == col1 and "right" in edges:
+                        kw["right"] = side
+                else:
+                    for e in edges:
+                        kw[e] = side
+                cell.border = Border(**kw)
+
+    def set_wrap_text(self, table_index: int, row0: int, col0: int,
+                      row1: int, col1: int, wrap: bool = True) -> None:
+        """범위 셀의 자동 줄바꿈을 켜거나 끈다(긴 내용이 셀 안에서 다 보이게)."""
+        ws = self._ws(table_index)
+        for cell in self._iter_range(ws, row0, col0, row1, col1):
+            a = cell.alignment
+            cell.alignment = Alignment(
+                horizontal=a.horizontal, vertical=a.vertical,
+                wrap_text=bool(wrap), text_rotation=a.text_rotation, indent=a.indent)
+
+    def merge_cells_range(self, table_index: int, row0: int, col0: int,
+                          row1: int, col1: int) -> None:
+        """범위를 하나로 병합한다(제목/헤더용)."""
+        ws = self._ws(table_index)
+        ws.merge_cells(start_row=row0 + 1, start_column=col0 + 1,
+                       end_row=row1 + 1, end_column=col1 + 1)
+
+    def unmerge_cells_range(self, table_index: int, row0: int, col0: int,
+                            row1: int, col1: int) -> None:
+        """범위 병합을 해제한다."""
+        ws = self._ws(table_index)
+        ws.unmerge_cells(start_row=row0 + 1, start_column=col0 + 1,
+                         end_row=row1 + 1, end_column=col1 + 1)
+
+    def clear_range(self, table_index: int, row0: int, col0: int, row1: int, col1: int,
+                    *, contents: bool = True, formats: bool = False) -> None:
+        """범위를 지운다. contents=값/수식, formats=서식(채우기·테두리·글꼴·형식)."""
+        ws = self._ws(table_index)
+        for cell in self._iter_range(ws, row0, col0, row1, col1):
+            if contents:
+                cell.value = None
+            if formats:
+                cell.fill = PatternFill(fill_type=None)
+                cell.border = Border()
+                cell.font = Font()
+                cell.number_format = "General"
+                cell.alignment = Alignment()
+
+    def color_rows_where(self, table_index: int, condition_col: int, match_value: str,
+                         color: str, target_col0: int, target_col1: int,
+                         *, data_start_row: int = 0, contains: bool = False,
+                         clear_non_matching: bool = True) -> dict[str, Any]:
+        """condition_col(0-based) 값이 match_value 인 데이터 행을 찾아, 대상 열
+        범위(target_col0..target_col1)를 color 로 칠한다. 행 번호를 손으로 짚지
+        않고 조건으로 한 번에 처리해 헤더가 여러 줄인 표에서 어긋남을 막는다.
+        clear_non_matching 이면 대상 열의 기존 채우기를 먼저 지운다."""
+        ws = self._ws(table_index)
+        rows, _ = self._dims(ws)
+        fill = PatternFill(patternType="solid", fgColor=_color_obj(color))
+        blank = PatternFill(fill_type=None)
+        target = str(match_value).strip()
+        matched: list[int] = []
+        for r in range(data_start_row, rows):
+            v = ws.cell(row=r + 1, column=condition_col + 1).value
+            sv = "" if v is None else str(v).strip()
+            hit = (target in sv) if contains else (sv == target)
+            for c in range(target_col0, target_col1 + 1):
+                cell = ws.cell(row=r + 1, column=c + 1)
+                if isinstance(cell, MergedCell):
+                    continue
+                if hit:
+                    cell.fill = fill
+                elif clear_non_matching:
+                    cell.fill = blank
+            if hit:
+                matched.append(r + 1)
+        return {"matched_rows": len(matched),
+                "scanned": max(0, rows - data_start_row), "rows_1based": matched}
+
+    def set_data_validation(self, table_index: int, row0: int, col0: int,
+                            row1: int, col1: int, values: list[str]) -> None:
+        """범위 셀에 드롭다운(목록) 유효성 검사를 건다. values 항목만 고를 수 있다."""
+        ws = self._ws(table_index)
+        joined = ",".join(str(v) for v in values)
+        dv = DataValidation(type="list", formula1=f'"{joined}"', allow_blank=True)
+        c0, c1 = get_column_letter(col0 + 1), get_column_letter(col1 + 1)
+        dv.add(f"{c0}{row0 + 1}:{c1}{row1 + 1}")
+        ws.add_data_validation(dv)
+
+    def freeze_panes(self, table_index: int, rows: int = 1, cols: int = 0) -> None:
+        """상단 rows 개 행 / 좌측 cols 개 열을 고정한다. rows=0 이고 cols=0 이면 해제."""
+        ws = self._ws(table_index)
+        if rows <= 0 and cols <= 0:
+            ws.freeze_panes = None
+            return
+        ws.freeze_panes = f"{get_column_letter(cols + 1)}{rows + 1}"
+
+    def set_column_width(self, table_index: int, col: int, width: float) -> None:
+        """열 너비를 지정한다(문자 단위). col 은 0-based."""
+        ws = self._ws(table_index)
+        ws.column_dimensions[get_column_letter(col + 1)].width = width
+
+    def set_row_height(self, table_index: int, row: int, height: float) -> None:
+        """행 높이를 지정한다(포인트 단위). row 는 0-based."""
+        ws = self._ws(table_index)
+        ws.row_dimensions[row + 1].height = height
+
+    def find_replace(self, table_index: int, find: str, replace: str,
+                     *, match_case: bool = False) -> int:
+        """시트에서 find 를 replace 로 모두 바꾼다. 바꾼 셀 수를 반환한다.
+        수식 셀('='로 시작)은 참조 파괴를 막기 위해 건드리지 않는다."""
+        import re as _re
+        ws = self._ws(table_index)
+        n = 0
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if not isinstance(v, str) or v.startswith("="):
+                    continue
+                if match_case:
+                    if find in v:
+                        cell.value = v.replace(find, replace)
+                        n += 1
+                else:
+                    new = _re.sub(_re.escape(find), replace, v, flags=_re.IGNORECASE)
+                    if new != v:
+                        cell.value = new
+                        n += 1
+        return n
 
     # ---- markdown 시트 (서술형 보고서) ----------------------------------
     #
