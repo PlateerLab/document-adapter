@@ -7,6 +7,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-09-30
+
+### Changed
+- 필수 의존성 7개를 정확한 버전으로 고정했다(소비 서비스 xgen-workflow 가 지금 설치하는 버전):
+  python-docx 1.2.0, docxtpl 0.20.2, python-pptx 1.0.2, openpyxl 3.1.5, jinja2 3.1.6, lxml 6.1.3, mcp 1.30.0.
+
 ## [0.19.0] — 2026-08-11
 
 **.xlsx 완성 — 차트 · 보고서 시트 · 편집** — 표만 그리던 .xlsx 계층을
